@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>탐색 기록 모델</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">탐색 기록 모델</div>
+  <div class="topbar-right" id="topbarRight" hidden>
+    <span class="team-chip" id="teamChip"></span>
+    <button class="btn ghost" id="btnShowCard" type="button">카드 보기</button>
+    <button class="btn ghost" id="btnExport" type="button">정리본 내려받기</button>
+    <button class="btn ghost" id="btnReset" type="button">새로 시작</button>
+  </div>
+</header>
+
+<main>
+  <!-- 1. 입장 -->
+  <section class="screen" id="screenLogin" hidden>
+    <div class="panel narrow">
+      <h1>수업 입장</h1>
+      <p class="muted">교수님이 알려준 수업 코드와 팀 이름을 적어 주세요. 이름 같은 개인 정보는 적지 않습니다.</p>
+      <form id="formLogin" class="stack">
+        <label>수업 코드<input id="inCode" type="password" autocomplete="off" required></label>
+        <label>팀 이름<input id="inTeam" type="text" maxlength="30" placeholder="예: 3조" required></label>
+        <p class="error" id="loginError" role="alert"></p>
+        <button class="btn primary" type="submit">시작</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- 2. 연구 참여 동의 (저장이 켜져 있을 때만) -->
+  <section class="screen" id="screenConsent" hidden>
+    <div class="panel narrow">
+      <h1>연구 참여 안내</h1>
+      <div class="notice">
+        <p>이 수업의 탐색 기록은 AI 디자인 교육 연구에 쓰일 수 있습니다.</p>
+        <ul>
+          <li>동의하면 카드, 대화, 기록 노드가 이름 없이 임의 번호로 저장됩니다.</li>
+          <li>동의하지 않아도 수업과 도구는 똑같이 쓸 수 있고, 성적에 영향이 없습니다.</li>
+          <li>동의하지 않으면 아무것도 저장되지 않습니다. 정리본은 직접 내려받을 수 있습니다.</li>
+        </ul>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="btnConsentYes" type="button">동의하고 참여</button>
+        <button class="btn" id="btnConsentNo" type="button">동의하지 않음</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. 기준·의도 카드 -->
+  <section class="screen" id="screenCard" hidden>
+    <div class="panel">
+      <h1>기준·의도 카드</h1>
+      <p class="muted">팀이 함께 한 장을 씁니다. 분량 제한은 없습니다.</p>
+      <form id="formCard" class="stack">
+        <label><span class="num">1</span> 프로젝트와 공간 이슈
+          <small>어떤 공간이고, 누구를 위한 것인가</small>
+          <textarea id="cIssue" rows="3" required></textarea></label>
+        <label><span class="num">2</span> 지금 떠오르는 공간
+          <small>말이나 간단한 묘사. 레퍼런스는 기준이 아니라 예시입니다</small>
+          <textarea id="cImage" rows="3"></textarea></label>
+        <label><span class="num">3</span> 꼭 지켜야 할 것과 이유
+          <small>중요한 순서대로. 예) 들어오자마자 내부가 다 보이지 않을 것. 처음 온 사람이 숨을 곳이 필요해서</small>
+          <textarea id="cKeep" rows="4" required></textarea></label>
+        <label><span class="num">4</span> 알아보고 싶은 질문
+          <small>질문의 형태로. 예) 시선을 막지 않고도 혼자 있는 느낌을 줄 수 있을까?</small>
+          <textarea id="cQuestion" rows="3" required></textarea></label>
+        <button class="btn primary" type="submit">카드 입력하고 시작</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- 4. 탐색 -->
+  <section class="screen work" id="screenWork" hidden>
+    <div class="chat">
+      <div class="messages" id="messages" aria-live="polite"></div>
+      <form class="composer" id="formSend">
+        <textarea id="inMsg" rows="3" placeholder="AI 결과를 붙여 넣거나, 보고 생각한 것을 적어 주세요. (Ctrl/⌘ + Enter로 보내기)"></textarea>
+        <div class="composer-actions">
+          <button class="btn" id="btnFinish" type="button">마무리할게요</button>
+          <button class="btn primary" id="btnSend" type="submit">보내기</button>
+        </div>
+      </form>
+    </div>
+    <aside class="nodes">
+      <div class="nodes-head">
+        <h2>기록</h2>
+        <button class="btn ghost small" id="btnAddNode" type="button">+ 직접 추가</button>
+      </div>
+      <p class="muted small">모델이 정리한 내용입니다. 내 말과 다르면 고치거나 지워 주세요.</p>
+      <div id="nodeList" class="node-list"></div>
+    </aside>
+  </section>
+</main>
+
+<dialog id="cardDialog">
+  <h2>기준·의도 카드</h2>
+  <div id="cardView"></div>
+  <form method="dialog"><button class="btn primary">닫기</button></form>
+</dialog>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
