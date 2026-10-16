@@ -17,6 +17,7 @@ create table if not exists public.turns (
   role text not null check (role in ('user', 'assistant')),
   content text not null,
   nodes jsonb,
+  question_id text, -- 모델이 한 질문의 번호 (Q1~Q11, NONE, UNKNOWN, MISSING). prompt.ts의 QUESTIONS 참조
   created_at timestamptz not null default now()
 );
 

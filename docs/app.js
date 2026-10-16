@@ -83,24 +83,27 @@
       if (body.action === "summary") return resolve({ ok: true, stored: false });
       const last = (body.messages || []).slice(-1)[0];
       const text = last ? last.content : "";
+      const card = body.card || {};
+      const keep = (card.keep || "").split(/[.\n]/)[0].trim().slice(0, 24) || "카드 3번의 항목";
+      const said = text.trim().slice(0, 20);
       mockTurn += 1;
-      if (mockTurn === 1) {
-        return resolve({ reply: "[목업] 카드를 읽었어요. 3번의 첫 항목부터 볼게요. 그게 왜 중요해요?", nodes: [] });
-      }
+      if (mockTurn === 1) return resolve({ reply: "[목업] ‘" + keep + "’은 왜 중요해요?", nodes: [], questionId: "Q1" });
       if (/마무리/.test(text)) {
-        return resolve({ reply: "[목업] 처음 알아보고 싶었던 것에 대해 무엇을 알아냈나요?", nodes: [] });
+        return resolve({ reply: "[목업] 처음 알아보고 싶었던 “" + (card.question || "").slice(0, 30) + "”에 대해 무엇을 알아냈나요?", nodes: [], questionId: "Q10" });
       }
       const qs = [
-        "그게 공간에서는 어떻게 보일까요?",
-        "기록했어요.",
-        "지금까지 결과들을 나란히 보면, 처음 기대와 달라진 게 있나요?",
-        "무엇을 고르고 무엇을 버렸나요, 왜요?",
-        "이 사례는 어디서 확인하셨나요?",
+        ["Q2", "‘" + keep + "’은 공간에서는 어떻게 보일까요?"],
+        ["NONE", "기록했어요."],
+        ["Q4", "지금까지 결과들을 나란히 보면, 처음 기대와 달라진 게 있나요?"],
+        ["Q5", "‘" + said + "’을 고르고 나머지는 버렸네요. 왜요?"],
+        ["Q6", "처음에는 ‘" + keep + "’을 1순위로 두었는데, 이번 선택은 다르네요. 무엇이 바뀌었나요?"],
       ];
+      const [qid, q] = qs[(mockTurn - 2) % qs.length];
       const t = TYPES[mockTurn % TYPES.length];
       resolve({
-        reply: "[목업] " + qs[mockTurn % qs.length],
+        reply: "[목업] " + q,
         nodes: text ? [{ type: t, quote: text.slice(0, 60), note: "목업 정리" }] : [],
+        questionId: qid,
       });
     }, 400));
   }
@@ -218,7 +221,7 @@
     try {
       const msgs = state.messages.map((m) => ({ role: m.role, content: m.content }));
       const data = await api(Object.assign(base(), { action: "chat", messages: msgs }));
-      state.messages.push({ role: "assistant", content: data.reply || "(빈 응답)" });
+      state.messages.push({ role: "assistant", content: data.reply || "(빈 응답)", questionId: data.questionId || "" });
       const turn = state.messages.length;
       const fresh = opts && opts.hidden ? [] : (data.nodes || []); // 자동으로 보낸 첫 메시지는 기록하지 않음
       fresh.forEach((n) => {
@@ -227,7 +230,7 @@
     } catch (e) {
       state.messages.pop(); // 실패한 메시지는 되돌려 다시 보낼 수 있게
       if (!(opts && opts.hidden)) $("inMsg").value = content;
-      state.messages.push({ role: "assistant", content: "⚠ " + e.message, error: true });
+      state.messages.push({ role: "assistant", content: "오류 · " + e.message, error: true });
       renderMessages();
       state.messages.pop();
       setBusy(false);

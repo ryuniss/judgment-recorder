@@ -4,7 +4,7 @@
 // - COLLECT_ENABLED=true 이고 학생이 동의한 경우에만 DB에 저장한다.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { buildSystemPrompt, type Card } from "./prompt.ts";
+import { buildSystemPrompt, QUESTIONS, type Card } from "./prompt.ts";
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const CLASS_CODE = Deno.env.get("CLASS_CODE") ?? "";
@@ -74,7 +74,12 @@ function normalize(messages: unknown): Msg[] {
   return out;
 }
 
-function splitNodes(text: string): { reply: string; nodes: Node[] } {
+function splitNodes(text: string): { reply: string; nodes: Node[]; questionId: string } {
+  // 질문 번호 블록: <q>Q5</q>. 목록에 없는 값은 UNKNOWN으로 남긴다.
+  const qm = text.match(/<q>\s*([A-Z0-9]+)\s*<\/q>/);
+  const rawQ = qm ? qm[1] : "";
+  const questionId = rawQ === "NONE" || rawQ in QUESTIONS ? rawQ : rawQ ? "UNKNOWN" : "MISSING";
+  text = text.replace(/<q>[\s\S]*?<\/q>/g, "");
   // 닫는 태그가 잘려도 학생 화면에 블록이 보이지 않게 끝까지 지운다.
   const m = text.match(/<nodes>([\s\S]*?)(?:<\/nodes>|$)/);
   const reply = text.replace(/<nodes>[\s\S]*?(?:<\/nodes>|$)/g, "").trim();
@@ -98,7 +103,7 @@ function splitNodes(text: string): { reply: string; nodes: Node[] } {
       nodes = [];
     }
   }
-  return { reply, nodes };
+  return { reply, nodes, questionId };
 }
 
 async function callClaude(card: Card, messages: Msg[]): Promise<string> {
@@ -131,7 +136,14 @@ function canStore(session: Session | undefined): session is Session {
   return COLLECT && !!session && session.consent === true && UUID.test(session.id);
 }
 
-async function storeTurn(session: Session, card: Card, userMsg: string, reply: string, nodes: Node[]) {
+async function storeTurn(
+  session: Session,
+  card: Card,
+  userMsg: string,
+  reply: string,
+  nodes: Node[],
+  questionId: string,
+) {
   const client = db();
   await client.from("sessions").upsert({
     id: session.id,
@@ -141,8 +153,8 @@ async function storeTurn(session: Session, card: Card, userMsg: string, reply: s
     updated_at: new Date().toISOString(),
   });
   await client.from("turns").insert([
-    { session_id: session.id, role: "user", content: userMsg, nodes: null },
-    { session_id: session.id, role: "assistant", content: reply, nodes },
+    { session_id: session.id, role: "user", content: userMsg, nodes: null, question_id: null },
+    { session_id: session.id, role: "assistant", content: reply, nodes, question_id: questionId },
   ]);
 }
 
@@ -177,15 +189,15 @@ Deno.serve(async (req) => {
         return json({ error: "보낼 메시지가 없습니다." }, 400);
       }
       const raw = await callClaude(card, messages);
-      const { reply, nodes } = splitNodes(raw);
+      const { reply, nodes, questionId } = splitNodes(raw);
       if (canStore(session)) {
         try {
-          await storeTurn(session, card, messages[messages.length - 1].content, reply, nodes);
+          await storeTurn(session, card, messages[messages.length - 1].content, reply, nodes, questionId);
         } catch (e) {
           console.error("store failed", e);
         }
       }
-      return json({ reply, nodes });
+      return json({ reply, nodes, questionId });
     }
 
     if (action === "summary") {
