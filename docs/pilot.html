@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>기록 모델 파일럿 점검</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+<style>
+  .pilot { max-width: 1200px; margin: 0 auto; }
+  .controls { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-top: 16px; }
+  .controls label { min-width: 220px; }
+  .controls .check { flex-direction: row; align-items: center; gap: 8px; min-width: 0; }
+  .controls .check input { width: auto; accent-color: #111111; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 24px; }
+  .stat { border: 1px solid var(--line); border-radius: 4px; padding: 14px 16px; }
+  .stat .v { font-size: 26px; font-weight: 300; }
+  .stat .k { font-size: 13px; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; vertical-align: top; }
+  th { font-weight: 400; color: var(--muted); }
+  td.reply { white-space: pre-wrap; max-width: 420px; }
+  td:nth-child(3), td:nth-child(4), td:nth-child(7) { white-space: nowrap; }
+  .mark { font-size: 12px; border: 1px solid var(--ink); border-radius: 999px; padding: 0 8px; white-space: nowrap; }
+  .mark.bad { background: var(--ink); color: #FFFFFF; }
+  .progress { margin-top: 12px; color: var(--muted); font-size: 14px; min-height: 1.5em; }
+</style>
+</head>
+<body>
+<header class="topbar"><div class="brand">기록 모델 · 파일럿 점검</div></header>
+<main>
+  <div class="pilot">
+    <h1>파일럿 점검</h1>
+    <p class="muted">미리 짠 학생 시나리오를 실제 서버에 넣어, 상황마다 기대한 질문이 나오는지와 틀·인용을 지키는지 확인합니다.
+      시나리오 대화는 저장되지 않습니다. 실행할 때마다 Claude API 사용량이 듭니다 (약 20회 호출).</p>
+    <div class="controls">
+      <label>수업 코드<input id="code" type="password" autocomplete="off"></label>
+      <label class="check"><input id="parallel" type="checkbox"> 시나리오를 동시에 실행 (여러 팀이 함께 쓰는 상황)</label>
+      <button class="btn primary" id="run" type="button">실행</button>
+      <button class="btn" id="dl" type="button" disabled>결과 내려받기</button>
+    </div>
+    <p class="progress" id="progress"></p>
+    <div class="stats" id="stats"></div>
+    <table id="table" hidden>
+      <thead><tr><th>시나리오</th><th>학생 메시지</th><th>기대</th><th>실제</th><th>틀</th><th>인용</th><th>시간</th><th>모델 응답</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+<script src="config.js"></script>
+<script src="pilot.js"></script>
+</body>
+</html>

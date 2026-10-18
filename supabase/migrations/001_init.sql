@@ -18,6 +18,7 @@ create table if not exists public.turns (
   content text not null,
   nodes jsonb,
   question_id text, -- 모델이 한 질문의 번호 (Q1~Q11, NONE, UNKNOWN, MISSING). prompt.ts의 QUESTIONS 참조
+  checks jsonb,     -- 충실도 자동 검사: templateOk, nodes, verbatimNodes, latencyMs, model
   created_at timestamptz not null default now()
 );
 
@@ -25,6 +26,7 @@ create table if not exists public.summaries (
   id bigserial primary key,
   session_id uuid not null references public.sessions(id) on delete cascade,
   nodes jsonb not null,
+  trigger text,     -- auto(고칠 때 자동 저장) 또는 export(내려받을 때)
   created_at timestamptz not null default now()
 );
 

@@ -5,6 +5,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { buildSystemPrompt, QUESTIONS, type Card } from "./prompt.ts";
+import { runChecks, type Checks } from "./checks.ts";
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 const CLASS_CODE = Deno.env.get("CLASS_CODE") ?? "";
@@ -31,7 +32,7 @@ function json(body: unknown, status = 200): Response {
 }
 
 type Msg = { role: "user" | "assistant"; content: string };
-type Node = { type: string; quote: string; note: string };
+type Node = { type: string; quote: string; note: string; verbatim?: boolean };
 type Session = { id: string; team: string; consent: boolean };
 
 function db() {
@@ -143,6 +144,8 @@ async function storeTurn(
   reply: string,
   nodes: Node[],
   questionId: string,
+  checks: Checks,
+  latencyMs: number,
 ) {
   const client = db();
   await client.from("sessions").upsert({
@@ -153,8 +156,15 @@ async function storeTurn(
     updated_at: new Date().toISOString(),
   });
   await client.from("turns").insert([
-    { session_id: session.id, role: "user", content: userMsg, nodes: null, question_id: null },
-    { session_id: session.id, role: "assistant", content: reply, nodes, question_id: questionId },
+    { session_id: session.id, role: "user", content: userMsg, nodes: null, question_id: null, checks: null },
+    {
+      session_id: session.id,
+      role: "assistant",
+      content: reply,
+      nodes,
+      question_id: questionId,
+      checks: { ...checks, latencyMs, model: MODEL },
+    },
   ]);
 }
 
@@ -188,20 +198,25 @@ Deno.serve(async (req) => {
       if (!messages.length || messages[messages.length - 1].role !== "user") {
         return json({ error: "보낼 메시지가 없습니다." }, 400);
       }
+      const started = Date.now();
       const raw = await callClaude(card, messages);
+      const latencyMs = Date.now() - started;
       const { reply, nodes, questionId } = splitNodes(raw);
+      const userMsg = messages[messages.length - 1].content;
+      const { checks, verbatim } = runChecks(questionId, reply, nodes, userMsg);
+      nodes.forEach((n, i) => (n.verbatim = verbatim[i]));
       if (canStore(session)) {
         try {
-          await storeTurn(session, card, messages[messages.length - 1].content, reply, nodes, questionId);
+          await storeTurn(session, card, userMsg, reply, nodes, questionId, checks, latencyMs);
         } catch (e) {
           console.error("store failed", e);
         }
       }
-      return json({ reply, nodes, questionId });
+      return json({ reply, nodes, questionId, checks, latencyMs });
     }
 
     if (action === "summary") {
-      // 학생이 직접 고친 최종 노드 목록. 동의한 경우에만 저장한다.
+      // 학생이 고친 노드 목록. 고칠 때마다(auto)와 내려받을 때(export) 버전으로 쌓는다. 동의한 경우에만 저장한다.
       if (canStore(session)) {
         const nodes = Array.isArray(body.nodes) ? body.nodes.slice(0, 500) : [];
         const client = db();
@@ -212,7 +227,8 @@ Deno.serve(async (req) => {
           card: cleanCard(body.card),
           updated_at: new Date().toISOString(),
         });
-        await client.from("summaries").insert({ session_id: session.id, nodes });
+        const trigger = body.trigger === "auto" ? "auto" : "export";
+        await client.from("summaries").insert({ session_id: session.id, nodes, trigger });
         return json({ ok: true, stored: true });
       }
       return json({ ok: true, stored: false });

@@ -169,24 +169,24 @@
       if (t === n.type) o.selected = true;
       sel.appendChild(o);
     });
-    sel.addEventListener("change", () => { n.type = sel.value; n.edited = true; save(); });
+    sel.addEventListener("change", () => { n.type = sel.value; n.edited = true; nodesChanged(); });
     const spacer = document.createElement("span"); spacer.className = "spacer";
     const del = document.createElement("button");
     del.type = "button"; del.className = "btn ghost small"; del.textContent = "지우기";
     del.addEventListener("click", () => {
       state.nodes = state.nodes.filter((x) => x.id !== n.id);
-      save(); renderNodes();
+      nodesChanged(); renderNodes();
     });
     top.append(sel, spacer, del);
 
     const quote = document.createElement("textarea");
     quote.rows = 2; quote.value = n.quote; quote.setAttribute("aria-label", "원문");
-    quote.addEventListener("input", () => { n.quote = quote.value; n.edited = true; save(); });
+    quote.addEventListener("input", () => { n.quote = quote.value; n.edited = true; nodesChanged(); });
 
     const note = document.createElement("input");
     note.type = "text"; note.value = n.note || ""; note.placeholder = "짧은 정리";
     note.setAttribute("aria-label", "짧은 정리");
-    note.addEventListener("input", () => { n.note = note.value; n.edited = true; save(); });
+    note.addEventListener("input", () => { n.note = note.value; n.edited = true; nodesChanged(); });
 
     const check = document.createElement("label");
     check.className = "check";
@@ -195,7 +195,7 @@
     cb.addEventListener("change", () => {
       n.confirmed = cb.checked;
       wrap.classList.toggle("confirmed", cb.checked);
-      save();
+      nodesChanged();
     });
     check.append(cb, document.createTextNode("내 말과 맞아요"));
 
@@ -207,6 +207,17 @@
     $("btnSend").disabled = b;
     $("btnFinish").disabled = b;
     $("inMsg").disabled = b;
+  }
+
+  // ---------- 노드 수정 자동 저장 (저장이 켜져 있고 동의한 경우에만) ----------
+  let syncTimer = null;
+  function nodesChanged() {
+    save();
+    if (!(state.collect && state.consent) || MOCK) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => {
+      api(Object.assign(base(), { action: "summary", trigger: "auto", nodes: state.nodes })).catch(() => { /* 다음 수정 때 다시 보냄 */ });
+    }, 4000);
   }
 
   // ---------- 대화 ----------
@@ -290,7 +301,8 @@
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
     if (state.collect && state.consent) {
-      try { await api(Object.assign(base(), { action: "summary", nodes: state.nodes })); } catch (_) { /* 내려받기는 이미 됨 */ }
+      clearTimeout(syncTimer);
+      try { await api(Object.assign(base(), { action: "summary", trigger: "export", nodes: state.nodes })); } catch (_) { /* 내려받기는 이미 됨 */ }
     }
   }
 
@@ -355,7 +367,7 @@
 
   $("btnAddNode").addEventListener("click", () => {
     state.nodes.push({ id: newId(), type: "DISCOVERY", quote: "", note: "", confirmed: false, manual: true, turn: state.messages.length });
-    save(); renderNodes();
+    nodesChanged(); renderNodes();
   });
   $("btnExport").addEventListener("click", exportRecord);
   $("btnShowCard").addEventListener("click", showCard);
