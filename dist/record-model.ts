@@ -192,6 +192,12 @@ const MODEL = Deno.env.get("CLAUDE_MODEL") ?? "claude-sonnet-5-5";
 const COLLECT = Deno.env.get("COLLECT_ENABLED") === "true";
 const ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN") ?? "*";
 const ANTHROPIC_BASE_URL = Deno.env.get("ANTHROPIC_BASE_URL") ?? "https://api.anthropic.com";
+// 어느 모델로 돌릴지: claude(기본) 또는 gemini. 파일럿은 gemini 무료 키로, 실제 수업은 claude로 쓰는 식.
+const PROVIDER = (Deno.env.get("LLM_PROVIDER") ?? "claude").toLowerCase() === "gemini" ? "gemini" : "claude";
+const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
+const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-flash-latest";
+const GEMINI_BASE_URL = Deno.env.get("GEMINI_BASE_URL") ?? "https://generativelanguage.googleapis.com";
+const MODEL_LABEL = PROVIDER === "gemini" ? `gemini:${GEMINI_MODEL}` : `claude:${MODEL}`;
 
 const NODE_TYPES = new Set(["INTENT", "DISCOVERY", "JUDGMENT", "CRITERION", "MOVE"]);
 const MAX_MESSAGES = 80;
@@ -312,6 +318,29 @@ async function callClaude(card: Card, messages: Msg[]): Promise<string> {
     .join("\n");
 }
 
+async function callGemini(card: Card, messages: Msg[]): Promise<string> {
+  const res = await fetch(`${GEMINI_BASE_URL}/v1beta/models/${GEMINI_MODEL}:generateContent`, {
+    method: "POST",
+    headers: { "x-goog-api-key": GEMINI_API_KEY, "content-type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: buildSystemPrompt(card) }] },
+      contents: messages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
+      generationConfig: { maxOutputTokens: 1200, temperature: 0.3 },
+    }),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Gemini API ${res.status}: ${detail.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const parts = data?.candidates?.[0]?.content?.parts ?? [];
+  return parts.map((p: { text?: string }) => p.text ?? "").join("\n");
+}
+
+function callModel(card: Card, messages: Msg[]): Promise<string> {
+  return PROVIDER === "gemini" ? callGemini(card, messages) : callClaude(card, messages);
+}
+
 function canStore(session: Session | undefined): session is Session {
   return COLLECT && !!session && session.consent === true && UUID.test(session.id);
 }
@@ -342,7 +371,7 @@ async function storeTurn(
       content: reply,
       nodes,
       question_id: questionId,
-      checks: { ...checks, latencyMs, model: MODEL },
+      checks: { ...checks, latencyMs, model: MODEL_LABEL },
     },
   ]);
 }
@@ -367,18 +396,19 @@ Deno.serve(async (req) => {
 
   try {
     if (action === "login") {
-      return json({ ok: true, collect: COLLECT });
+      return json({ ok: true, collect: COLLECT, model: MODEL_LABEL });
     }
 
     if (action === "chat") {
-      if (!ANTHROPIC_API_KEY) return json({ error: "서버에 API 키가 설정되지 않았습니다." }, 500);
+      if (PROVIDER === "claude" && !ANTHROPIC_API_KEY) return json({ error: "서버에 Claude API 키가 설정되지 않았습니다." }, 500);
+      if (PROVIDER === "gemini" && !GEMINI_API_KEY) return json({ error: "서버에 Gemini API 키가 설정되지 않았습니다." }, 500);
       const card = cleanCard(body.card);
       const messages = normalize(body.messages);
       if (!messages.length || messages[messages.length - 1].role !== "user") {
         return json({ error: "보낼 메시지가 없습니다." }, 400);
       }
       const started = Date.now();
-      const raw = await callClaude(card, messages);
+      const raw = await callModel(card, messages);
       const latencyMs = Date.now() - started;
       const { reply, nodes, questionId } = splitNodes(raw);
       const userMsg = messages[messages.length - 1].content;
@@ -391,7 +421,7 @@ Deno.serve(async (req) => {
           console.error("store failed", e);
         }
       }
-      return json({ reply, nodes, questionId, checks, latencyMs });
+      return json({ reply, nodes, questionId, checks, latencyMs, model: MODEL_LABEL });
     }
 
     if (action === "summary") {

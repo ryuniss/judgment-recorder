@@ -139,6 +139,7 @@
       try {
         const d = await call(messages);
         row.got = d.questionId || "";
+        row.model = d.model || "";
         row.reply = d.reply || "";
         row.checks = d.checks || null;
         row.latencyMs = d.latencyMs || Math.round(performance.now() - started);
@@ -164,7 +165,9 @@
     const nodes = ok.reduce((s, r) => s + ((r.checks && r.checks.nodes) || 0), 0);
     const verb = ok.reduce((s, r) => s + ((r.checks && r.checks.verbatimNodes) || 0), 0);
     const times = results.map((r) => r.roundTripMs || 0);
+    const model = (results.find((r) => r.model) || {}).model || "–";
     return {
+      "모델": model,
       "질문 번호 일치": pct(results.filter((r) => r.match).length, results.length) + " (" + results.filter((r) => r.match).length + "/" + results.length + ")",
       "질문 틀 준수": pct(tmpl.filter((r) => r.checks.templateOk).length, tmpl.length),
       "인용 원문 일치": pct(verb, nodes) + " (" + verb + "/" + nodes + ")",

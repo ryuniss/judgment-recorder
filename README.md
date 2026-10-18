@@ -55,9 +55,17 @@ supabase functions deploy record-model --no-verify-jwt
 | `CLASS_CODE` | 수업 코드. 이 코드를 아는 사람만 기록 모델을 쓸 수 있습니다 |
 | `COLLECT_ENABLED` | `true`면 동의한 학생의 기록을 DB에 저장합니다. 기본값 `false` |
 | `ALLOWED_ORIGIN` | 화면 주소. 다른 사이트에서 함수를 호출하지 못하게 막습니다 |
-| `CLAUDE_MODEL` | (선택) 쓸 모델. 기본값 `claude-sonnet-5-5` |
+| `CLAUDE_MODEL` | (선택) 쓸 Claude 모델. 기본값 `claude-sonnet-5-5` |
+| `LLM_PROVIDER` | (선택) `claude`(기본) 또는 `gemini` |
+| `GEMINI_API_KEY` | `LLM_PROVIDER=gemini`일 때 필요. aistudio.google.com에서 발급 |
+| `GEMINI_MODEL` | (선택) 기본값 `gemini-flash-latest` |
 
 Anthropic Console에서 월 사용 한도를 걸어 두기를 권합니다.
+
+> **Gemini 무료 등급 주의**: 무료 등급에서는 보낸 내용이 Google의 모델 개선에 쓰일 수 있습니다. 파일럿 점검이나 시연 연습처럼 가짜 데이터로만 쓰고, 학생 대화를 받는 실제 수업은 유료 API(Claude 또는 Gemini 유료 등급)로 바꾸세요.
+
+### 대시보드로 배포하기 (CLI 없이)
+`python3 scripts/bundle.py`로 `dist/record-model.ts`를 만든 뒤, Supabase 대시보드 › Edge Functions › record-model › Code에 붙여 넣고 배포합니다. 함수 설정에서 **Verify JWT** 는 끕니다(수업 코드로 막음).
 
 ### 4. 화면에 서버 주소 적기
 `docs/config.js`를 열어 두 값을 채우고 커밋합니다.
