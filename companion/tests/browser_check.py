@@ -36,7 +36,7 @@ def run():
     assert abs(ring['x']-choices['x'])<=5 and abs(ring['width']-choices['width'])<=10
     page.screenshot(path=str(OUTPUT/'coach6-desktop.png'),full_page=False)
     page.set_viewport_size({'width':390,'height':844})
-    page.wait_for_function("(()=>{const r=document.querySelector('#checkpoint-choices').getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight})()")
+    expect(page.locator('#checkpoint-choices')).to_be_in_viewport(ratio=1)
     page.screenshot(path=str(OUTPUT/'coach6-mobile.png'),full_page=False)
     ring=page.locator('.coach-ring').bounding_box();choices=page.locator('#checkpoint-choices').bounding_box();card=page.locator('.coach-card').bounding_box()
     assert ring['height']>=choices['height'] and ring['height']>0
