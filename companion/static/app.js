@@ -1,6 +1,25 @@
 const $ = (s, root = document) => root.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const names = {SELECT:'선택', HOLD:'보류', EXCLUDE:'제외', UNDECIDED:'아직 모르겠어요'};
+const meanings = {SELECT:'이 방향으로 이어갈래요.', HOLD:'판단했어요. 다음에 다시 볼 후보로 남겨둘게요.', EXCLUDE:'이 방향은 이어가지 않을래요.', UNDECIDED:'느낀 건 있지만 아직 정하지 못했어요.'};
+// A result's display name is independent from its nullable judgment label.
+function ordinalName(index) {
+  let name='';
+  for(let n=index+1;n>0;n=Math.floor((n-1)/26)) name=String.fromCharCode(65+(n-1)%26)+name;
+  return name;
+}
+function normalizeResultNames(rows) {
+  const counts=new Map();
+  for(const result of rows) {
+    if(result.is_context){result.label='생성 화면';continue;}
+    const index=counts.get(result.round_id)||0;
+    result.label=ordinalName(index);counts.set(result.round_id,index+1);
+  }
+  return rows;
+}
+function previousRoundName(decision) { return decision.number == null ? '이전 연습' : `라운드 ${decision.number}`; }
+function knownResult(id) { return state?.rounds.flatMap(r=>r.results).find(r=>r.id===id); }
+
 const app = $('#app'), modal = $('#modal');
 let state, current, config = {}, view = null, attached = null, checkpoint = null, draft = null, sending = false, saving = false, uploadBusy = false, uploadError = '', pendingUploads = [], toastTimer;
 let guide = null, guideReturnFocus = null, guideReturnView = null, modalReturnFocus = null, lastReplyFailure = null, historyData = null;
@@ -25,6 +44,7 @@ function button(action, text, cls = '', attrs = '') { return `<button type="butt
 function savedMessage() { const r=state.rounds.filter(x=>x.status==='recorded'&&!x.is_practice).at(-1); return r ? `라운드 ${r.number}을 기록했어요. 새 결과를 올리면 라운드 ${r.number+1}이 시작돼요.` : ''; }
 async function refresh() {
   state = await api('/state');
+  for(const round of state.rounds) normalizeResultNames(round.results);
   current = state.rounds.find(x => x.status !== 'recorded') || null;
   if (attached && !results().some(x => x.id === attached)) attached = null;
 }
@@ -71,6 +91,14 @@ function options(id, value, revision=false) { return `<div role="radiogroup" ari
 function draftSave() { if(draft) writeLocal(key('checkpoint'),draft); }
 async function loadCheckpoint() {
   checkpoint=await api(route('checkpoint'),{});
+  // The unchanged API returns label=null to mean an unchosen judgment.
+  // Restore display names from the authoritative upload order, not that field.
+  const ordered=results();
+  const order=new Map(ordered.map((r,i)=>[r.id,i]));
+  checkpoint.results.sort((a,b)=>(order.get(a.id)??Number.MAX_SAFE_INTEGER)-(order.get(b.id)??Number.MAX_SAFE_INTEGER));
+  checkpoint.results.forEach((r,i)=>{r.label=knownResult(r.id)?.label||ordinalName(i);});
+  checkpoint.previous.forEach(d=>{d.result_label=knownResult(d.result_id)?.label||'결과';});
+
   const stored=readLocal(key('checkpoint'),null);
   draft=stored||{decisions:{},moves:[],revisions:{}};
   for(const r of checkpoint.results) {
@@ -82,20 +110,60 @@ async function loadCheckpoint() {
   }
   if(!stored && checkpoint.moves?.length) draft.moves=checkpoint.moves;
   if(!draft.moves.length) draft.moves=[{content:'',original_text:'',links:[]}];
+  draft.ui ||= {step:1,focusId:null};
+  if(!checkpoint.results.some(r=>r.id===draft.ui.focusId)) draft.ui.focusId=checkpoint.results.find(r=>r.discussed)?.id||checkpoint.results[0]?.id||null;
+  if(checkpoint.results.some(r=>r.discussed&&!names[draft.decisions[r.id]?.label])) draft.ui.step=1;
   draftSave();
+}
+function chosenResults() { return checkpoint.results.filter(r=>names[draft.decisions[r.id]?.label]); }
+function decisionFor(result) {
+  return draft.decisions[result.id] ||= {label:null,reason:result.original_text,original:result.original_text};
+}
+function checkpointStepper() {
+  const second=draft.ui.step===2;
+  return `<ol class="stepper" aria-label="확인 단계"><li class="${second?'done':'current'}" ${second?'':'aria-current="step"'}><span>1</span>결과마다 판단</li><li class="step-line" aria-hidden="true"></li><li class="${second?'current':''}" ${second?'aria-current="step"':''}><span>2</span>다음에 해볼 것</li></ol>`;
+}
+function checkpointPick(result) {
+  const choice=draft.decisions[result.id]?.label;
+  return button('checkpoint-result',`${pic(result)}<span>${result.label}<small class="${choice?'chosen':''}">${names[choice]||(result.discussed?'아직':'')}</small></span>`,'result-pick '+(result.discussed?'':'optional'),`data-id="${result.id}" aria-current="${draft.ui.focusId===result.id}" aria-label="결과 ${result.label}${draft.ui.focusId===result.id?' 보는 중':''}"`);
+}
+function focusResultHTML(result) {
+  const d=draft.decisions[result.id]||{label:null,reason:result.original_text};
+  const edited=d.reason!==result.original_text,index=checkpoint.results.indexOf(result);
+  const prev=checkpoint.results[index-1],next=checkpoint.results[index+1];
+  return `<section class="result-check checkpoint-focus" aria-labelledby="focus-name">${pic(result)}<div class="focus-column"><h2 id="focus-name">${result.label}</h2><div><div class="field-label"><label for="reason-${result.id}">${result.label}를 보며 내가 한 말</label><span class="tag edited-tag" ${edited?'':'hidden'}>내가 고침</span></div><textarea id="reason-${result.id}" data-reason="${result.id}" rows="2">${esc(d.reason)}</textarea><p class="hint">이 말이 판단의 이유로 남아요. 고치면 처음 한 말도 함께 남아요.</p></div><div class="original" ${edited?'':'hidden'}><span>처음 한 말</span><p>${esc(result.original_text)}</p>${button('restore','처음 말로 되돌리기','link',`data-id="${result.id}"`)}</div><div><p class="field-label" id="judgment-question">${result.label}에 대한 내 판단</p><div id="checkpoint-choices" role="radiogroup" aria-labelledby="judgment-question" class="judgment-choices">${Object.entries(names).map(([value,name])=>button('label',`<b>${name}</b><span>${meanings[value]}</span>`,'choice',`role="radio" aria-label="${name}" aria-checked="${d.label===value}" data-id="${result.id}" data-value="${value}"`)).join('')}</div></div><div class="result-nav">${prev?button('checkpoint-result',`← ${prev.label}`,'',`data-id="${prev.id}"`):'<span></span>'}${next?button('checkpoint-result',`${next.label} 보기 →`,'',`data-id="${next.id}"`):'<span></span>'}</div></div></section>`;
+}
+function judgmentsHTML() {
+  const talked=checkpoint.results.filter(r=>r.discussed),quiet=checkpoint.results.filter(r=>!r.discussed);
+  const completed=talked.filter(r=>names[draft.decisions[r.id]?.label]).length;
+  const active=checkpoint.results.find(r=>r.id===draft.ui.focusId);
+  return `<h1 id="checkpoint-heading" tabindex="-1">대화에서 이야기한 결과마다 내 판단을 골라요</h1><div class="result-picks">${talked.length?`<section class="pick-group" aria-label="이야기한 결과"><h2>이야기한 결과</h2><div class="pick-row">${talked.map(checkpointPick).join('')}</div></section>`:''}${quiet.length?`<section class="pick-group" aria-label="이야기하지 않은 결과"><h2>이야기하지 않은 결과 (골라도 되고 안 골라도 돼요)</h2><div class="pick-row">${quiet.map(checkpointPick).join('')}</div></section>`:''}</div>${active?focusResultHTML(active):'<p class="empty">이번 라운드에 확인할 결과가 없어요. 이대로 다음으로 가거나 대화로 돌아갈 수 있어요.</p>'}<div class="checkpoint-footer"><span id="checkpoint-progress" role="status">이야기한 결과 ${talked.length}개 중 ${completed}개 골랐어요</span>${button('checkpoint-next','다음: 해볼 것 정하기','primary',`aria-describedby="checkpoint-progress" ${completed<talked.length?'disabled':''}`)}</div>${button('reopen','대화로 돌아가기','ghost checkpoint-return')}`;
+}
+function previousRevisionsHTML() {
+  if(!checkpoint.previous.length)return '';
+  return `<details class="panel" ${Object.keys(draft.revisions).length?'open':''}><summary>이전 라운드의 판단 다시 보기</summary><p class="muted">판단이 바뀌었다면 새 판단으로 남길 수 있어요. 처음 기록도 함께 남아요.</p>${checkpoint.previous.map(d=>`<section class="panel"><b>${previousRoundName(d)}의 ${d.result_label} ${names[d.label]||'판단'}</b><p class="say">${esc(d.reason)}</p>${draft.revisions[d.id]?`${options(d.id,draft.revisions[d.id].label,true)}<label for="revision-${d.id}">바뀐 이유</label><textarea id="revision-${d.id}" data-revision="${d.id}">${esc(draft.revisions[d.id].reason)}</textarea>${button('cancel-revision','바꾸지 않기','ghost',`data-id="${d.id}"`)}`:button('revise','판단 바꾸기','',`data-id="${d.id}"`)}</section>`).join('')}</details>`;
+}
+function movesHTML() {
+  const chosen=chosenResults();
+  const missing=checkpoint.results.some(r=>r.discussed&&!names[draft.decisions[r.id]?.label]);
+  return `<h1 id="checkpoint-heading" tabindex="-1">다음 라운드에서 해볼 것을 적어요</h1>${checkpoint.analysis_error?`<p class="error">${esc(checkpoint.analysis_error)}</p>`:''}<section class="panel" aria-labelledby="judgment-summary"><h2 id="judgment-summary" class="summary-heading">이번 라운드에서 고른 판단</h2><ul class="judgment-summary">${chosen.map(r=>{const d=draft.decisions[r.id];return `<li>${pic(r)}<b>${r.label}</b><span class="judgment-tag">${names[d.label]}</span><span class="summary-reason">${esc(d.reason)}</span>${button('edit-judgment','고치기','link',`data-id="${r.id}" aria-label="${r.label} 판단 고치기"`)}</li>`;}).join('')}</ul>${chosen.length?'':'<p class="muted">이번 라운드에서 고른 판단이 없어요.</p>'}</section>${draft.moves.map((m,i)=>`<section class="panel move-block"><div class="bar"><h2><label for="move-${i}">해볼 것${i?' '+(i+1):''}</label></h2>${i?button('remove-move','지우기','ghost',`data-index="${i}" aria-label="해볼 것 ${i+1} 지우기"`):''}</div><textarea id="move-${i}" data-move="${i}" rows="2">${esc(m.content)}</textarea>${m.original_text?'<p class="hint">대화에서 한 말을 넣어뒀어요. 고쳐도 되고, 지우고 새로 적어도 돼요.</p>':''}<p class="field-label">이 생각과 이어지는 판단을 골라요 (여러 개 골라도 돼요)</p><div class="actions">${chosen.map(r=>{const d=draft.decisions[r.id];return button('link',`<b>${r.label} ${names[d.label]}</b>${esc(d.reason.slice(0,45))}`,'chip',`data-id="${r.id}" data-index="${i}" aria-pressed="${m.links.includes(r.id)}"`);}).join('')}${checkpoint.previous.filter(d=>names[draft.revisions[d.id]?.label||d.label]).map(d=>button('link',`<b>${previousRoundName(d)}의 ${d.result_label} ${names[draft.revisions[d.id]?.label||d.label]}</b>${esc((draft.revisions[d.id]?.reason??d.reason).slice(0,45))}`,'chip',`data-id="${d.id}" data-index="${i}" aria-pressed="${m.links.includes(d.id)}"`)).join('')}</div></section>`).join('')}${button('add-move','해볼 것 하나 더 적기','add-move')}${previousRevisionsHTML()}<div class="checkpoint-footer">${button('checkpoint-back','← 판단으로 돌아가기','',saving?'disabled':'')}${button('record',saving?'기록하는 중':'이대로 기록하기','primary',missing||saving?'disabled':'')}</div><p id="record-error" class="error" role="alert"></p>`;
 }
 function checkpointHTML() {
   if(!checkpoint||!draft)return '<p>확인 내용을 불러오고 있어요.</p>';
-  const shown=checkpoint.results.filter(r=>draft.decisions[r.id]);
-  const quiet=checkpoint.results.filter(r=>!draft.decisions[r.id]);
-  const missing=shown.filter(r=>!draft.decisions[r.id].label);
-  return `<h1>결과마다 내 판단을 골라주세요</h1><p class="lead">이유 칸에는 대화에서 내가 한 말이 그대로 들어 있어요. 고치면 고친 내용으로 기록되고, 처음 말도 함께 남아요.</p>${checkpoint.analysis_error?`<p class="error">${esc(checkpoint.analysis_error)}</p>`:''}<dl class="defs"><dt>보류</dt><dd>판단했어요. 다음에 다시 볼 후보로 남겨둘게요.</dd><dt>아직 모르겠어요</dt><dd>느낀 건 있지만 아직 정하지 못했어요.</dd></dl><div class="pair">${shown.map((r,i)=>{const d=draft.decisions[r.id], edited=d.reason!==r.original_text;return `<section class="result-check" ${i===0?'id="first-check"':''} aria-label="결과 ${r.label}"><div class="cap">${r.label}</div>${pic(r)}${options(r.id,d.label)}${!d.label?'<span class="warn">아직 고르지 않았어요</span>':''}<div><div class="field-label"><label for="reason-${r.id}">이유</label><span class="tag edited-tag" ${edited?'':'hidden'}>내가 고침</span></div><textarea id="reason-${r.id}" data-reason="${r.id}" rows="2">${esc(d.reason)}</textarea></div><div class="original" ${edited?'':'hidden'}><span>처음 한 말</span><p>${esc(r.original_text)}</p>${button('restore','처음 말로 되돌리기','link',`data-id="${r.id}"`)}</div></section>`;}).join('')}</div>${!shown.length?'<p class="empty">이번 라운드에 확인할 판단이 없어요. 이대로 기록하거나 대화로 돌아갈 수 있어요.</p>':''}${quiet.length?`<section class="quiet"><span class="spacer">대화에서 이야기하지 않은 결과</span>${quiet.map(r=>button('add-decision',`${r.label} 판단 적기`,'',`data-id="${r.id}"`)).join('')}</section>`:''}${draft.moves.map((m,i)=>`<section class="panel"><div class="bar"><h2>${i?'다음에 해볼 것 '+(i+1):'다음에 해볼 것'}</h2>${i?button('remove-move','지우기','ghost',`data-index="${i}"`):''}</div><label class="sr-only" for="move-${i}">다음에 해볼 것 ${i+1}</label><textarea id="move-${i}" data-move="${i}" rows="1">${esc(m.content)}</textarea><small>이 행동과 관련된 판단</small><div class="actions">${checkpoint.results.map(r=>{const d=draft.decisions[r.id];return button('link',d?.label?`<b>${r.label} ${names[d.label]}</b>${esc(d.reason.slice(0,45))}`:`${r.label}는 판단을 고르면 여기에 나와요`,'chip',`data-id="${r.id}" data-index="${i}" aria-pressed="${m.links.includes(r.id)}" ${d?.label?'':'disabled'}`);}).join('')}${checkpoint.previous.map(d=>button('link',`<b>라운드 ${d.number}의 ${d.result_label} ${names[draft.revisions[d.id]?.label||d.label]}</b>${esc((draft.revisions[d.id]?.reason??d.reason).slice(0,45))}`,'chip',`data-id="${d.id}" data-index="${i}" aria-pressed="${m.links.includes(d.id)}"`)).join('')}</div></section>`).join('')}${button('add-move','＋ 다음에 해볼 것 추가','ghost')}${checkpoint.previous.length?`<details class="panel" ${Object.keys(draft.revisions).length?'open':''}><summary>이전 라운드의 판단 다시 보기</summary><p class="muted">판단이 바뀌었다면 새 판단으로 남길 수 있어요. 처음 기록도 함께 남아요.</p>${checkpoint.previous.map(d=>`<section class="panel"><b>라운드 ${d.number}의 ${d.result_label} ${names[d.label]}</b><p class="say">${esc(d.reason)}</p>${draft.revisions[d.id]?`${options(d.id,draft.revisions[d.id].label,true)}<label for="revision-${d.id}">바뀐 이유</label><textarea id="revision-${d.id}" data-revision="${d.id}">${esc(draft.revisions[d.id].reason)}</textarea>${button('cancel-revision','바꾸지 않기','ghost',`data-id="${d.id}"`)}`:button('revise','판단 바꾸기','',`data-id="${d.id}"`)}</section>`).join('')}</details>`:''}<div class="record-actions">${button('reopen','대화로 돌아가기','',saving?'disabled':'')}<span class="warn" id="record-hint">${missing.length?`${missing.map(r=>r.label).join(', ')}에서 하나를 고르면 기록할 수 있어요. 아직 모르겠으면 그렇게 골라도 돼요.`:''}</span>${button('record',saving?'기록하는 중':'이대로 기록하기','primary',`aria-describedby="record-hint" ${missing.length||saving?'disabled':''}`)}</div><p id="record-error" class="error" role="alert"></p>`;
+  return checkpointStepper()+(draft.ui.step===2?movesHTML():judgmentsHTML());
+}
+function checkpointStage(step,focusId) {
+  draft.ui.step=step;
+  if(focusId)draft.ui.focusId=focusId;
+  draftSave();render();
+  $('#checkpoint-heading')?.focus({preventScroll:true});$('#stage')?.scrollIntoView({block:'start',behavior:'instant'});
 }
 function openModal(html) { modalReturnFocus=document.activeElement;modal.innerHTML=`<div class="modal-body">${html}</div>`;modal.showModal(); }
 modal.addEventListener('close',()=>modalReturnFocus?.isConnected&&modalReturnFocus.focus());
 function practiceDone() { openModal(`<h1>연습을 마쳤어요</h1><p>이제 내 결과를 올리고 탐색을 시작할 수 있어요.<br>연습에서 한 말과 판단은 연구 기록에 들어가지 않아요.</p><div class="actions">${button('practice-again','연습 한 번 더 하기')}${button('start-real','라운드 1 시작','primary')}</div>`); }
 async function showHistory() {
   historyData=await api('/history');
+  normalizeResultNames(historyData.results);
   const {rounds,decisions,moves,results:rs,move_decision_links:links}=historyData;
   openModal(`<div class="bar"><h1>탐색 과정 보기</h1>${button('close-modal','닫기')}</div><p class="muted">내가 확인하고 기록한 탐색이에요.</p><div class="history-list">${rounds.length?rounds.map(r=>`<section class="panel"><h2>라운드 ${r.number}</h2>${decisions.filter(d=>d.round_id===r.id&&!decisions.some(n=>n.previous_id===d.id&&n.version_reason==='checkpoint_correction')).map(d=>`<div><b>${esc(rs.find(x=>x.id===d.result_id)?.label)} ${names[d.label]}</b>${d.version_reason==='judgment_revision'?'<small> 판단이 바뀌었어요</small>':''}<p class="say">${esc(d.reason)}</p></div>`).join('')}${moves.filter(m=>m.round_id===r.id).map(m=>`<div><h3>다음에 해볼 것</h3><p class="say">${esc(m.content)}</p><small>${links.filter(l=>l.move_id===m.id).map(l=>{const d=decisions.find(d=>d.id===l.decision_id);const result=rs.find(x=>x.id===d?.result_id);return d?`${result?.label} ${names[d.label]}`:'';}).join(' / ')}</small></div>`).join('')}</section>`).join(''):'<p class="empty">아직 기록한 탐색이 없어요.</p>'}</div>${button('download-history','기록 내려받기')}`);
 }
@@ -148,7 +216,7 @@ document.addEventListener('paste',e=>{
 });
 document.addEventListener('input',e=>{
   if(e.target.id==='message')writeLocal(key('compose'),{text:e.target.value});
-  if(e.target.dataset.reason){const id=e.target.dataset.reason;draft.decisions[id].reason=e.target.value;draftSave();const section=e.target.closest('.result-check');const edited=e.target.value!==checkpoint.results.find(r=>r.id===id).original_text;$('.edited-tag',section).hidden=!edited;$('.original',section).hidden=!edited;}
+  if(e.target.dataset.reason){const id=e.target.dataset.reason;decisionFor(checkpoint.results.find(r=>r.id===id)).reason=e.target.value;draftSave();const section=e.target.closest('.result-check');const edited=e.target.value!==checkpoint.results.find(r=>r.id===id).original_text;$('.edited-tag',section).hidden=!edited;$('.original',section).hidden=!edited;}
   if(e.target.dataset.move!==undefined){draft.moves[+e.target.dataset.move].content=e.target.value;draftSave();}
   if(e.target.dataset.revision){draft.revisions[e.target.dataset.revision].reason=e.target.value;draftSave();}
 });
@@ -170,9 +238,13 @@ async function act(action,node) {
     case 'retry-reply':await sendMessage(lastReplyFailure);break;
     case 'checkpoint':
       if(readLocal(key('compose'),{text:''}).text.trim()){toast('아직 보내지 않은 말이 있어요. 먼저 보내주세요.');return;}
-      node.disabled=true;try{await loadCheckpoint();await refresh();view=null;render();if(!state.checkpoint_seen&&checkpoint.results.some(r=>draft.decisions[r.id]))startGuide(true);}catch(e){node.disabled=false;throw e;}break;
+      node.disabled=true;try{await loadCheckpoint();await refresh();view=null;render();if(!state.checkpoint_seen&&checkpoint.results.length)startGuide(true);}catch(e){node.disabled=false;throw e;}break;
     case 'reopen':await api(route('reopen'),{});await refresh();render();break;
-    case 'label':draft.decisions[id].label=node.dataset.value;draftSave();render();$(`[data-action="label"][data-id="${id}"][data-value="${node.dataset.value}"]`)?.focus();break;
+    case 'label':decisionFor(checkpoint.results.find(r=>r.id===id)).label=node.dataset.value;draftSave();render();$(`[data-action="label"][data-id="${id}"][data-value="${node.dataset.value}"]`)?.focus();break;
+    case 'checkpoint-result':draft.ui.focusId=id;draftSave();render();$('#focus-name')?.scrollIntoView({block:'nearest',behavior:'instant'});$('#checkpoint-choices button')?.focus({preventScroll:true});break;
+    case 'checkpoint-next':if(!checkpoint.results.some(r=>r.discussed&&!names[draft.decisions[r.id]?.label]))checkpointStage(2);break;
+    case 'checkpoint-back':checkpointStage(1);break;
+    case 'edit-judgment':checkpointStage(1,id);break;
     case 'add-decision':{const r=checkpoint.results.find(r=>r.id===id);draft.decisions[id]={label:null,reason:r.original_text,original:r.original_text};draftSave();render();$(`#reason-${id}`)?.focus();break;}
     case 'restore':draft.decisions[id].reason=checkpoint.results.find(r=>r.id===id).original_text;draftSave();render();$(`#reason-${id}`)?.focus();break;
     case 'link':{const links=draft.moves[index].links;draft.moves[index].links=links.includes(id)?links.filter(x=>x!==id):[...links,id];draftSave();render();$(`[data-action="link"][data-id="${id}"][data-index="${index}"]`)?.focus();break;}
@@ -183,7 +255,7 @@ async function act(action,node) {
     case 'revision-label':draft.revisions[id].label=node.dataset.value;draftSave();render();break;
     case 'record':{
       if(saving)return;saving=true;render();const practice=current.is_practice;const draftKey=key('checkpoint');
-      try{await api(route('record'),{decisions:Object.entries(draft.decisions).map(([result_id,d])=>({result_id,label:d.label,reason:d.reason})),moves:draft.moves,revisions:Object.values(draft.revisions)});removeLocal(draftKey);await refresh();checkpoint=null;draft=null;attached=null;lastReplyFailure=null;saving=false;render();if(practice)practiceDone();else toast(savedMessage());}
+      try{await api(route('record'),{decisions:Object.entries(draft.decisions).filter(([,d])=>names[d.label]).map(([result_id,d])=>({result_id,label:d.label,reason:d.reason})),moves:draft.moves,revisions:Object.values(draft.revisions)});removeLocal(draftKey);await refresh();checkpoint=null;draft=null;attached=null;lastReplyFailure=null;saving=false;render();if(practice)practiceDone();else toast(savedMessage());}
       catch(error){saving=false;render();$('#record-error').textContent=error.message;const retry=$('[data-action="record"]');retry.textContent='다시 기록하기';}break;
     }
     case 'start-real':modal.close();await api('/rounds',{is_practice:false});await refresh();view=null;render();break;
@@ -192,7 +264,7 @@ async function act(action,node) {
     case 'download-history':downloadJSON(historyData,'companion-history.json');break;
     case 'close-modal':modal.close();break;
     case 'context':{const r=current.results.find(x=>x.is_context);openModal(`<div class="bar"><h2>생성 화면</h2>${button('close-modal','닫기')}</div>${pic(r)}<p class="muted">결과를 만든 맥락 자료예요.</p>`);break;}
-    case 'guide':startGuide(current?.status==='checkpoint');break;
+    case 'guide':if(current?.status==='checkpoint'&&draft.ui.step!==1)checkpointStage(1);startGuide(current?.status==='checkpoint');break;
     case 'guide-next':if(guide.checkpoint||guide.step===4)await closeGuide();else{guide.step++;drawGuide();}break;
     case 'guide-close':await closeGuide();break;
     case 'logout':await api('/logout',{});state=null;current=null;renderLogin();break;
@@ -214,17 +286,17 @@ function startGuide(cp=false) {
 function drawGuide() {
   if(!guide)return;
   if(!guide.checkpoint){view=guide.step===2?results()[0]?.id:null;render();}
-  const info=guide.checkpoint?['#first-check','결과마다 내 판단을 골라요','이유 칸에는 내가 한 말이 그대로 들어 있어요. 내용을 확인하고 내 판단을 골라요.']:coachSteps[guide.step];
+  const info=guide.checkpoint?['#checkpoint-choices','결과마다 내 판단을 골라요','네 가지 중 하나를 골라요. 위 칸에는 대화에서 내가 한 말이 그대로 들어 있고, 고칠 수 있어요. 다 고르면 다음에 해볼 것을 적어요.']:coachSteps[guide.step];
   let target=$(info[0]);if(!target)target=$('#stage');
   target.scrollIntoView({block:'center',behavior:'instant'});
-  $('#coach-root').innerHTML=`<div class="coach-shade" data-shade="top"></div><div class="coach-shade" data-shade="left"></div><div class="coach-shade" data-shade="right"></div><div class="coach-shade" data-shade="bottom"></div><div class="coach-ring"></div><section class="coach-card" role="dialog" aria-modal="true" aria-labelledby="coach-title"><div class="coach-dots" aria-label="${guide.checkpoint?'확인 화면 안내':`안내 ${guide.step+1} / 5`}">${Array.from({length:guide.checkpoint?1:5},(_,i)=>`<i class="${i===guide.step?'current':''}"></i>`).join('')}</div><h2 id="coach-title">${info[1]}</h2><p>${info[2]}</p><div class="actions">${button('guide-close','안내 건너뛰기','ghost')}${button('guide-next',guide.checkpoint?'확인했어요':guide.step===4?(current.is_practice?'연습 라운드 시작':'안내 마치기'):'다음','primary')}</div></section>`;
+  $('#coach-root').innerHTML=`<div class="coach-shade" data-shade="top"></div><div class="coach-shade" data-shade="left"></div><div class="coach-shade" data-shade="right"></div><div class="coach-shade" data-shade="bottom"></div><div class="coach-ring"></div><section class="coach-card" role="dialog" aria-modal="true" aria-labelledby="coach-title"><div class="coach-dots"><b class="coach-kicker">사용 안내</b><span class="coach-step-dots" aria-label="${guide.checkpoint?'확인 화면 안내':`안내 ${guide.step+1} / 5`}">${Array.from({length:guide.checkpoint?1:5},(_,i)=>`<i class="${i===guide.step?'current':''}"></i>`).join('')}</span></div><h2 id="coach-title">${info[1]}</h2><p>${info[2]}</p><div class="actions">${button('guide-close','안내 건너뛰기','ghost')}${button('guide-next',guide.checkpoint?'확인했어요':guide.step===4?(current.is_practice?'연습 라운드 시작':'안내 마치기'):'다음','primary')}</div></section>`;
   app.inert=true;placeGuide();$('[data-action="guide-next"]')?.focus();
 }
 function placeGuide() {
   if(!guide)return;
-  const selector=guide.checkpoint?'#first-check':coachSteps[guide.step][0];const target=$(selector)||$('#stage');if(!target)return;
+  const selector=guide.checkpoint?'#checkpoint-choices':coachSteps[guide.step][0];const target=$(selector)||$('#stage');if(!target)return;
   const r=target.getBoundingClientRect(), w=innerWidth,h=innerHeight,pad=4;
-  const left=Math.max(4,r.left-pad),top=Math.max(4,r.top-pad),right=Math.min(w-4,r.right+pad),bottom=Math.min(h-4,r.bottom+pad);
+  const left=Math.max(4,Math.min(w-4,r.left-pad)),top=Math.max(4,Math.min(h-4,r.top-pad)),right=Math.max(4,Math.min(w-4,r.right+pad)),bottom=Math.max(4,Math.min(h-4,r.bottom+pad));
   const rect=(node,x,y,width,height)=>Object.assign(node.style,{left:`${x}px`,top:`${y}px`,width:`${Math.max(0,width)}px`,height:`${Math.max(0,height)}px`});
   rect($('[data-shade="top"]'),0,0,w,top);rect($('[data-shade="bottom"]'),0,bottom,w,h-bottom);rect($('[data-shade="left"]'),0,top,left,bottom-top);rect($('[data-shade="right"]'),right,top,w-right,bottom-top);rect($('.coach-ring'),left,top,right-left,bottom-top);
   const card=$('.coach-card'),cw=card.offsetWidth,ch=card.offsetHeight;
@@ -235,7 +307,7 @@ async function closeGuide() {
   if(!guide)return;const cp=guide.checkpoint;guide=null;$('#coach-root').innerHTML='';app.inert=false;view=guideReturnView;render();guideReturnFocus?.isConnected?guideReturnFocus.focus():$('[data-action="guide"]')?.focus();
   try{await api('/flags',{[cp?'checkpoint_seen':'intro_seen']:true});state[cp?'checkpoint_seen':'intro_seen']=1;}catch(error){toast(error.message);}
 }
-window.addEventListener('resize',placeGuide);window.addEventListener('scroll',placeGuide,{passive:true});
+window.addEventListener('resize',()=>{if(!guide)return;requestAnimationFrame(()=>{if(!guide)return;const target=$(guide.checkpoint?'#checkpoint-choices':coachSteps[guide.step][0])||$('#stage');target?.scrollIntoView({block:'center',behavior:'instant'});placeGuide();});});window.addEventListener('scroll',placeGuide,{passive:true});
 document.addEventListener('keydown',e=>{
   if(guide){if(e.key==='Escape'){e.preventDefault();closeGuide();}if(e.key==='Tab'){const buttons=[...$('.coach-card').querySelectorAll('button')];const i=buttons.indexOf(document.activeElement);e.preventDefault();buttons[(i+(e.shiftKey?-1:1)+buttons.length)%buttons.length].focus();}return;}
   if(e.target.matches('[role="radio"]')&&['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)){e.preventDefault();const group=[...e.target.parentElement.querySelectorAll('[role="radio"]')],i=group.indexOf(e.target);group[(i+(['ArrowLeft','ArrowUp'].includes(e.key)?-1:1)+group.length)%group.length].click();}

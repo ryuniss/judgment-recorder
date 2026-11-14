@@ -73,13 +73,25 @@ npm test
 deno test supabase/functions/record-model/checks_test.ts
 ```
 
-Python 저장 규칙/API 테스트와 jsdom 기반 DOM 흐름 테스트를 포함합니다. DOM 테스트는 실제 서버와 임시 DB에 연결해 안내·연습·실제 라운드·실패 복구를 검증합니다. 실제 브라우저의 배치·폰트·모바일 터치·화면 캡처를 검증하는 테스트는 아닙니다.
+Python 저장 규칙/API 테스트와 jsdom 기반 DOM 흐름 테스트를 포함합니다. DOM 테스트는 실제 서버와 임시 DB에 연결해 안내·연습·실제 라운드·실패 복구를 검증합니다.
+
+실제 Chromium 회귀 검증은 별도로 실행합니다. Python용 Playwright와 Chromium이 필요합니다.
+
+```sh
+python3 -m pip install -r companion/tests/requirements-browser.txt
+# 시스템 Chromium이 없으면 python3 -m playwright install chromium
+QA_OUTPUT=work/browser-check python3 -m companion.tests.browser_check
+```
+
+시스템 Chromium은 자동 탐색하며, 다른 경로는 CHROMIUM_PATH로 지정합니다. 이 테스트는 임시 DB와 테스트 참여자를 만들어 실제 브라우저에서 빈 연습 → 이미지 업로드 → 두 결과의 판단 → 해볼 것 두 개와 연결 → 실패 복구 → 기록/이전 판단 연결을 확인합니다. 1440×1000과 390×844 화면 캡처, 안내 포커스/위치, 기존 결과 이름 누락도 검증합니다. 실제 모바일 기기와 실제 AI 응답은 검증 범위에 포함하지 않습니다.
 Python/일반 JavaScript 구현이므로 새 앱에 별도 TypeScript 타입 검사는 없습니다. JavaScript 문법과 Python 컴파일을 검사하며 이전 TypeScript 테스트는 Deno로 검사합니다.
 
 ## 설계와 다른 점 / 남은 확인
 
 - 원래 배포본을 확보하지 못해 Python/SQLite로 재구현했습니다. 기존 운영 구조를 보존하는 최소 변경이라고 볼 수 없습니다.
 - 시안의 컵 아이콘 대신 요구사항대로 사진 3장을 포함했습니다. 출처는 `static/assets/CREDITS.md`입니다.
-- 확인 화면은 두 칸을 유지하되 작은 화면에서는 한 칸으로 쌓습니다.
-- 실제 브라우저 및 배포 환경에서 시안 대비 화면 캡처, 작은 화면 스포트라이트 위치, 포커스 이동을 최종 확인해야 합니다.
+- 확인은 ① 결과마다 판단 → ② 다음에 해볼 것으로 나눕니다. ①은 한 번에 결과 하나를 보여주며 이미지와 선택지를 나란히, 작은 화면에서는 세로로 배치합니다. 진행 중 화면에는 진행률을 표시하지 않고, 확인 ①에서만 이야기한 결과의 선택 개수를 표시합니다.
+- 결과 이름은 업로드 순서 A, B, C…로 통일합니다. 이름이 null인 기존 데이터와 확인 API의 미선택 판단값을 화면에서 결과 이름으로 사용하지 않습니다.
+- 단계 이동은 화면 상태/초안만 바꾸며 기존 record API에 한 번에 기록합니다. API와 DB 구조는 변경하지 않았습니다.
+- 실제 Chromium에서 데스크톱·모바일 너비의 화면 캡처와 스포트라이트 위치, 포커스 이동을 검증했습니다. 배포 후 검증 결과는 작업 보고에 별도로 기록합니다.
 - 실제 AI 연결, Render 배포, 운영 DB 조회 결과는 별도 검증이 필요합니다.
