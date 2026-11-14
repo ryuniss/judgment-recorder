@@ -1,3 +1,7 @@
+> **Companion v2 실행 앱**: 새 구현은 [`companion/`](companion/README.md)에 있습니다.
+> 연구 규칙은 [`PRODUCT.md`](PRODUCT.md), 실행은 `python3 -m companion.server`입니다.
+> 아래 문서는 보존된 이전 Supabase 앱에 대한 안내입니다.
+
 # 탐색 기록 모델
 
 학생 팀이 AI로 리서치하고 아이디어를 탐색하는 동안, 판단하지 않고 **묻고 정리하는** 기록 모델입니다.
