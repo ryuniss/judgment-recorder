@@ -101,6 +101,7 @@ def run():
     page.locator('[data-action="close-modal"]').click()
     with page.expect_file_chooser() as chooser:page.locator('#upload-target').click()
     chooser.value.set_files(str(Path('companion/static/assets/cup-1.jpg').resolve()));expect(page.locator('.tile')).to_have_count(1)
+    page.locator('[data-action="source-skip"]').click()
     page.locator('[data-action="checkpoint"]').click();page.locator('[data-action="checkpoint-next"]').click()
     expect(page.locator('.chip')).to_have_count(2);expect(page.locator('.chip').first).to_contain_text('라운드 1의 A 제외')
     expect(page.locator('.chip').nth(1)).to_contain_text('라운드 1의 B 아직 모르겠어요')

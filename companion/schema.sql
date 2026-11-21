@@ -44,3 +44,12 @@ CREATE TABLE IF NOT EXISTS move_decision_links (
  move_id TEXT NOT NULL REFERENCES moves(id), decision_id TEXT NOT NULL REFERENCES decisions(id),
  is_practice INTEGER NOT NULL, PRIMARY KEY(move_id,decision_id)
 );
+-- Student-selected lineage from a confirmed earlier move to a later result.
+-- Additive migration: existing records remain unconnected until the student chooses.
+CREATE TABLE IF NOT EXISTS result_move_links (
+ result_id TEXT NOT NULL REFERENCES results(id),
+ move_id TEXT NOT NULL REFERENCES moves(id),
+ is_practice INTEGER NOT NULL DEFAULT 0 CHECK(is_practice=0),
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(result_id,move_id)
+);

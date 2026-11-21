@@ -22,6 +22,7 @@ function knownResult(id) { return state?.rounds.flatMap(r=>r.results).find(r=>r.
 
 const app = $('#app'), modal = $('#modal');
 let state, current, config = {}, view = null, attached = null, checkpoint = null, draft = null, sending = false, saving = false, uploadBusy = false, uploadError = '', pendingUploads = [], toastTimer;
+let sourceDraft=null,sourceCandidates=[],sourceSaving=false,mapNodes=new Map(),mapEdges=[],mapObserver=null;
 let guide = null, guideReturnFocus = null, guideReturnView = null, modalReturnFocus = null, lastReplyFailure = null, historyData = null;
 const key = type => `companion-v2:${state?.id}:${current?.id}:${type}`;
 function readLocal(name, fallback) { try { return JSON.parse(localStorage.getItem(name)) ?? fallback; } catch { return fallback; } }
@@ -63,11 +64,11 @@ function renderLogin() {
 }
 function header() {
   const recent=state.rounds.filter(x=>!x.is_practice).slice(-4);
-  return `<header class="top"><div class="brand"><b>Companion</b><span>의자 형태 탐색</span></div><ol class="rounds" aria-label="라운드">${current?.is_practice?'<li class="practice" aria-current="step">연습 라운드</li>':recent.map(r=>`<li class="${r.id===current?.id?'now':''}" ${r.id===current?.id?'aria-current="step"':''}><span class="round-number">${r.number}</span>${r.status==='recorded'?'기록됨':r.status==='checkpoint'?'확인 중':'진행 중'}</li>`).join('')}</ol><span class="spacer"></span>${button('guide','사용 안내','ghost')}${button('history','탐색 과정 보기')}${button('logout','나가기','ghost')}</header>`;
+  return `<header class="top"><div class="brand"><b>Companion</b><span>의자 형태 탐색</span></div><ol class="rounds" aria-label="라운드">${current?.is_practice?'<li class="practice" aria-current="step">연습 라운드</li>':recent.map(r=>`<li class="${r.id===current?.id?'now':''}" ${r.id===current?.id?'aria-current="step"':''}><span class="round-number">${r.number}</span>${r.status==='recorded'?'기록됨':r.status==='checkpoint'?'확인 중':'진행 중'}</li>`).join('')}</ol><span class="spacer"></span>${button('guide','사용 안내','ghost')}${button('map','탐색 지도')}${button('history','기록 목록','ghost')}${button('logout','나가기','ghost')}</header>`;
 }
 function render() {
   if(!state) return;
-  app.innerHTML=`${config.demo?'<div class="notice" role="note">화면 테스트 · 정해진 대화 응답을 사용해요. 실제 AI 대화가 아니에요.</div>':''}<div class="app">${header()}<div class="body"><main class="stage" id="stage">${current?.status==='checkpoint'?checkpointHTML():stageHTML()}</main><aside class="side" aria-label="대화">${chatHTML()}</aside></div></div>`;
+  app.innerHTML=`${config.demo?'<div class="notice" role="note">화면 테스트 · 정해진 대화 응답을 사용해요. 실제 AI 대화가 아니에요.</div>':''}<div class="app">${header()}<div class="body"><main class="stage" id="stage"><div class="workspace-heading"><b>${current?.status==='checkpoint'?'라운드 확인':'이미지 작업대'}</b><span>${current?.status==='checkpoint'?'내 판단으로 남기기':'결과를 올리고 살펴보는 곳'}</span></div>${current?.status==='checkpoint'?checkpointHTML():stageHTML()}</main><aside class="side" aria-label="대화">${chatHTML()}</aside></div></div>`;
   const input=$('#message'); if(input) input.value=readLocal(key('compose'),{text:''}).text;
   setupDrop();
 }
@@ -79,13 +80,13 @@ function stageHTML() {
     return `${banner}<section class="viewer"><div class="bar">${button('grid','← 결과 모두 보기','ghost')}<b>${esc(r.label)}</b><span></span></div>${pic(r)}<div class="thumbs">${list.map(x=>button('view',`<img src="${esc(x.image)}" alt="${esc(x.label)}">`,'thumb',`data-id="${x.id}" aria-label="${x.label} 크게 보기" aria-current="${x.id===view}"`)).join('')}</div><div class="viewer-foot"><div class="actions">${button('prev','←','',`aria-label="이전 결과" ${i===0?'disabled':''}`)}${button('next','→','',`aria-label="다음 결과" ${i===list.length-1?'disabled':''}`)}</div>${button('attach',`${r.label}를 보며 말하기`,'primary','id="attach-button"')}</div></section>`;
   }
   const status=uploadBusy?'이미지를 올리고 있어요.':uploadError;
-  return `${banner}${!current&&savedMessage()?`<div class="banner" role="status"><p>${savedMessage()}</p></div>`:''}<div class="bar"><span>${list.length?`${current?.is_practice?'연습용':'올린'} 결과 ${list.length}개`:'새 결과를 올려주세요'}</span><div class="actions">${current?.results.some(x=>x.is_context)?button('context','생성 화면 보기'):''}${button('upload','이미지 더 올리기','','id="upload-target" '+(uploadBusy?'disabled':''))}</div></div>${list.length?`<div class="grid">${list.map((r,i)=>`<button type="button" class="tile ${attached===r.id?'attached':''}" data-action="view" data-id="${r.id}" ${i===0?'id="first-result"':''} aria-label="${r.label} 크게 보기"><div class="cap"><span>${r.label}</span>${attached===r.id?'<small>대화에 붙음</small>':''}</div>${pic(r)}</button>`).join('')}</div>`:`<section class="upload" id="drop-zone"><span class="upload-icon" aria-hidden="true">＋</span><h1>보고 싶은 결과를 올려주세요</h1><p>파일을 끌어다 놓거나, 복사한 이미지를 붙여넣어요.<br>JPG · PNG · WebP / 한 장에 8MB까지</p>${button('upload','파일 고르기','primary',uploadBusy?'disabled':'')}</section>`}<div class="error" role="status">${esc(status)}${uploadError&&pendingUploads.length?button('retry-upload','다시 올리기'):''}</div><div class="context"><span class="muted">(선택) 생성 화면 전체 캡처<br><small>결과를 만든 맥락을 함께 남겨요.</small></span>${button('upload-context','생성 화면 올리기','ghost',uploadBusy?'disabled':'')}</div>`;
+  return `${banner}${!current&&savedMessage()?`<div class="banner" role="status"><p>${savedMessage()}</p></div>`:''}<div class="bar"><span>${list.length?`${current?.is_practice?'연습용':'올린'} 결과 ${list.length}개`:'새 결과를 올려주세요'}</span><div class="actions">${current?.results.some(x=>x.is_context)?button('context','생성 화면 보기'):''}${current&&!current.is_practice&&current.number>1&&list.length?button('sources','이전 시도 연결','ghost'):''}${button('upload','이미지 더 올리기','','id="upload-target" '+(uploadBusy?'disabled':''))}</div></div>${list.length?`<div class="grid">${list.map((r,i)=>`<button type="button" class="tile ${attached===r.id?'attached':''}" data-action="view" data-id="${r.id}" ${i===0?'id="first-result"':''} aria-label="${r.label} 크게 보기"><div class="cap"><span>${r.label}</span>${attached===r.id?'<small>대화에 붙음</small>':''}</div>${pic(r)}</button>`).join('')}</div>`:`<section class="upload" id="drop-zone"><span class="upload-icon" aria-hidden="true">＋</span><h1>보고 싶은 결과를 올려주세요</h1><p>파일을 끌어다 놓거나, 복사한 이미지를 붙여넣어요.<br>JPG · PNG · WebP / 한 장에 8MB까지</p>${button('upload','파일 고르기','primary',uploadBusy?'disabled':'')}</section>`}<div class="error" role="status">${esc(status)}${uploadError&&pendingUploads.length?button('retry-upload','다시 올리기'):''}</div><div class="context"><span class="muted">(선택) 생성 화면 전체 캡처<br><small>결과를 만든 맥락을 함께 남겨요.</small></span>${button('upload-context','생성 화면 올리기','ghost',uploadBusy?'disabled':'')}</div>`;
 }
 function chatHTML() {
   const cp=current?.status==='checkpoint';
   const turns=(current?.turns||[]).filter(x=>!cp||x.role==='user');
   const list=results();
-  return `${cp?'<div class="readonly"><b>이번 라운드에서 한 말</b><span class="muted">읽기만 가능</span></div>':''}<div class="log" aria-live="polite">${!cp?`<div class="divider">${current?roundTitle(current)+' 시작':'탐색 기록'}</div>`:''}${turns.map(t=>t.role==='user'?`<div class="message">${t.result_id?`<span class="tag">${esc(list.find(x=>x.id===t.result_id)?.label||'결과')}를 보며</span>`:''}<p class="say">${esc(t.content)}</p></div>`:`<p class="ai">${esc(t.content)}</p>`).join('')}${!turns.length?`<p class="ai muted">${cp?'이번 라운드에는 대화가 없어요.':'보이는 대로, 떠오른 그대로 말해보세요.'}</p>`:''}${sending?'<p class="ai" role="status">답을 쓰고 있어요.</p>':''}${lastReplyFailure&&!cp?`<div class="panel"><p class="error">말은 저장됐지만 답을 받지 못했어요.</p>${button('retry-reply','다시 답 받기')}</div>`:''}</div>${cp?'<p class="readonly-note">기록하면 다음 라운드 대화를 이어갈 수 있어요.</p>':`<form class="compose" id="compose">${attached?`<div class="attachment">${esc(list.find(x=>x.id===attached)?.label)}를 보며${button('detach','×','','aria-label="붙이기 해제"')}</div>`:''}<label class="sr-only" for="message">하고 싶은 말</label><textarea id="message" rows="3" placeholder="보면서 떠오른 걸 그대로 적어주세요" ${sending?'readonly':''}></textarea><div class="row"><small>이미지를 누르면 크게 보고 붙일 수 있어요</small><button type="submit" class="primary" ${!current||sending?'disabled':''}>${sending?'보내는 중':'보내기'}</button></div><p id="send-error" class="error" role="alert"></p></form>${button('checkpoint',current?.is_practice?'연습 마치고 확인하기':'라운드 마치고 확인하기','end','id="end-button" '+(!current||sending?'disabled':''))}`}`;
+  return `${cp?'<div class="readonly"><b>이번 라운드에서 한 말</b><span class="muted">읽기만 가능</span></div>':'<div class="chat-heading"><b>대화</b><span>보고 있는 결과에 대해 말하는 곳</span></div>'}<div class="log" aria-live="polite">${!cp?`<div class="divider">${current?roundTitle(current)+' 시작':'탐색 기록'}</div>`:''}${turns.map(t=>t.role==='user'?`<div class="message">${t.result_id?`<span class="tag">${esc(list.find(x=>x.id===t.result_id)?.label||'결과')}를 보며</span>`:''}<p class="say">${esc(t.content)}</p></div>`:`<p class="ai">${esc(t.content)}</p>`).join('')}${!turns.length?`<p class="ai muted">${cp?'이번 라운드에는 대화가 없어요.':'보이는 대로, 떠오른 그대로 말해보세요.'}</p>`:''}${sending?'<p class="ai" role="status">답을 쓰고 있어요.</p>':''}${lastReplyFailure&&!cp?`<div class="panel"><p class="error">말은 저장됐지만 답을 받지 못했어요.</p>${button('retry-reply','다시 답 받기')}</div>`:''}</div>${cp?'<p class="readonly-note">기록하면 다음 라운드 대화를 이어갈 수 있어요.</p>':`<form class="compose" id="compose">${attached?`<div class="attachment">${esc(list.find(x=>x.id===attached)?.label)}를 보며${button('detach','×','','aria-label="붙이기 해제"')}</div>`:''}<label class="sr-only" for="message">하고 싶은 말</label><textarea id="message" rows="3" placeholder="보면서 떠오른 걸 그대로 적어주세요" ${sending?'readonly':''}></textarea><div class="row"><small>이미지를 누르면 크게 보고 붙일 수 있어요</small><button type="submit" class="primary" ${!current||sending?'disabled':''}>${sending?'보내는 중':'보내기'}</button></div><p id="send-error" class="error" role="alert"></p></form>${button('checkpoint',current?.is_practice?'연습 마치고 확인하기':'라운드 마치고 확인하기','end','id="end-button" '+(!current||sending?'disabled':''))}`}`;
 }
 function options(id, value, revision=false) { return `<div role="radiogroup" aria-label="${esc(checkpoint?.results.find(r=>r.id===id)?.label || checkpoint?.previous.find(r=>r.id===id)?.result_label || '결과')}에 대한 내 판단" class="opts">${Object.entries(names).map(([v,n])=>button(revision?'revision-label':'label',n,'opt',`role="radio" aria-checked="${value===v}" data-id="${esc(id)}" data-value="${v}"`)).join('')}</div>`; }
 function draftSave() { if(draft) writeLocal(key('checkpoint'),draft); }
@@ -158,8 +159,9 @@ function checkpointStage(step,focusId) {
   draftSave();render();
   $('#checkpoint-heading')?.focus({preventScroll:true});$('#stage')?.scrollIntoView({block:'start',behavior:'instant'});
 }
-function openModal(html) { modalReturnFocus=document.activeElement;modal.innerHTML=`<div class="modal-body">${html}</div>`;modal.showModal(); }
-modal.addEventListener('close',()=>modalReturnFocus?.isConnected&&modalReturnFocus.focus());
+function openModal(html) { mapObserver?.disconnect();modal.classList.remove('map-modal','source-modal');if(!modal.open)modalReturnFocus=document.activeElement;modal.innerHTML=`<div class="modal-body">${html}</div>`;if(!modal.open)modal.showModal(); }
+modal.addEventListener('close',()=>{mapObserver?.disconnect();modalReturnFocus?.isConnected&&modalReturnFocus.focus();});
+modal.addEventListener('cancel',event=>{if(sourceSaving)event.preventDefault();});
 function practiceDone() { openModal(`<h1>연습을 마쳤어요</h1><p>이제 내 결과를 올리고 탐색을 시작할 수 있어요.<br>연습에서 한 말과 판단은 연구 기록에 들어가지 않아요.</p><div class="actions">${button('practice-again','연습 한 번 더 하기')}${button('start-real','라운드 1 시작','primary')}</div>`); }
 async function showHistory() {
   historyData=await api('/history');
@@ -167,6 +169,77 @@ async function showHistory() {
   const {rounds,decisions,moves,results:rs,move_decision_links:links}=historyData;
   openModal(`<div class="bar"><h1>탐색 과정 보기</h1>${button('close-modal','닫기')}</div><p class="muted">내가 확인하고 기록한 탐색이에요.</p><div class="history-list">${rounds.length?rounds.map(r=>`<section class="panel"><h2>라운드 ${r.number}</h2>${decisions.filter(d=>d.round_id===r.id&&!decisions.some(n=>n.previous_id===d.id&&n.version_reason==='checkpoint_correction')).map(d=>`<div><b>${esc(rs.find(x=>x.id===d.result_id)?.label)} ${names[d.label]}</b>${d.version_reason==='judgment_revision'?'<small> 판단이 바뀌었어요</small>':''}<p class="say">${esc(d.reason)}</p></div>`).join('')}${moves.filter(m=>m.round_id===r.id).map(m=>`<div><h3>다음에 해볼 것</h3><p class="say">${esc(m.content)}</p><small>${links.filter(l=>l.move_id===m.id).map(l=>{const d=decisions.find(d=>d.id===l.decision_id);const result=rs.find(x=>x.id===d?.result_id);return d?`${result?.label} ${names[d.label]}`:'';}).join(' / ')}</small></div>`).join('')}</section>`).join(''):'<p class="empty">아직 기록한 탐색이 없어요.</p>'}</div>${button('download-history','기록 내려받기')}`);
 }
+async function showSources(ids,automatic=false) {
+  if(!current||current.is_practice||current.status!=='active')return;
+  const history=await api('/history');
+  const eligible=new Map(history.rounds.filter(r=>r.number<current.number).map(r=>[r.id,r]));
+  sourceCandidates=history.moves.filter(m=>m.status==='student_confirmed'&&eligible.has(m.round_id)).map(m=>({...m,number:eligible.get(m.round_id).number}));
+  if(!sourceCandidates.length){if(!automatic)toast('이전 라운드에 기록한 해볼 것이 아직 없어요.');return;}
+  const targets=results().filter(r=>ids.includes(r.id));
+  sourceDraft=Object.fromEntries(targets.map(r=>[r.id,[...(r.source_move_ids||[])]]));sourceSaving=false;
+  openModal(`<div class="bar"><div><p class="eyebrow">라운드 ${current.number} · 결과 연결</p><h1>어떤 시도에서 이어진 결과인가요?</h1></div></div><p class="muted">이전 라운드에서 적은 해볼 것과 연결할 수 있어요. 여러 개를 고르거나 건너뛰어도 돼요.</p><div class="source-results">${targets.map(r=>`<section class="source-result"><div class="source-image">${pic(r)}<b>결과 ${r.label}</b></div><div class="source-options">${sourceCandidates.map(m=>button('source-toggle',`<small>라운드 ${m.number}에서 해볼 것</small><span>${esc(m.content)}</span>`,'source-choice',`data-result="${r.id}" data-id="${m.id}" aria-pressed="${sourceDraft[r.id].includes(m.id)}"`)).join('')}</div></section>`).join('')}</div><p id="source-error" class="error" role="alert"></p><div class="source-footer">${button('source-skip',automatic?'이번에는 건너뛰기':'닫기')}${button('source-save','선택한 연결 저장','primary')}</div>`);
+  modal.classList.add('source-modal');
+}
+async function saveSources() {
+  if(sourceSaving||!sourceDraft)return;sourceSaving=true;
+  modal.querySelectorAll('button').forEach(b=>b.disabled=true);
+  try {
+    await api(route('sources'),{results:Object.entries(sourceDraft).map(([result_id,move_ids])=>({result_id,move_ids}))});
+    await refresh();sourceSaving=false;modal.close();render();toast('내가 고른 연결을 저장했어요. 라운드를 기록하면 탐색 지도에 보여요.');
+  } catch(error) {sourceSaving=false;modal.querySelectorAll('button').forEach(b=>b.disabled=false);$('#source-error').textContent=error.message;}
+}
+let selectedMapId=null;
+function mapNode(kind,row,round,result) {
+  const id=kind+'-'+row.id;
+  const title=kind==='result'?`결과 ${row.label}`:kind==='decision'?`${result?.label||'결과'} ${names[row.label]||'판단'}`:'다음에 해볼 것';
+  mapNodes.set(id,{id,kind,row,round,result,title});
+  return button('map-node',`<span class="node-kind">${kind==='result'?'결과':kind==='decision'?(row.version_reason==='judgment_revision'?'바뀐 판단':'내 판단'):'다음 시도'}</span>${kind==='result'?pic(row):''}<b>${esc(title)}</b>${kind!=='result'?`<span class="node-quote">${esc(kind==='decision'?row.reason:row.content)}</span>`:''}`,'map-node node-'+kind,`data-id="${id}" aria-label="라운드 ${round.number} ${esc(title)} 상세 보기" aria-pressed="false"`);
+}
+async function showMap() {
+  historyData=await api('/history');normalizeResultNames(historyData.results);
+  const {rounds,results:rs,decisions,moves,move_decision_links:links}=historyData;
+  const ds=decisions.filter(d=>!decisions.some(n=>n.previous_id===d.id&&n.version_reason==='checkpoint_correction'));
+  mapNodes=new Map();mapEdges=[];selectedMapId=null;
+  const columns=rounds.map(round=>{
+    const roundResults=rs.filter(r=>r.round_id===round.id&&!r.is_context);
+    const judgments=ds.filter(d=>d.round_id===round.id);
+    return `<section class="map-round" id="map-round-${round.id}" aria-label="라운드 ${round.number}"><header><span class="round-number">${round.number}</span><h2>라운드 ${round.number}</h2><span class="muted">기록됨</span></header><div class="map-result-rows">${roundResults.map(r=>`<div class="map-pair">${mapNode('result',r,round,r)}<div class="map-decisions">${judgments.filter(d=>d.result_id===r.id).map(d=>mapNode('decision',d,round,r)).join('')}</div></div>`).join('')}${judgments.filter(d=>!roundResults.some(r=>r.id===d.result_id)).map(d=>`<div class="map-revision">${mapNode('decision',d,round,rs.find(r=>r.id===d.result_id))}</div>`).join('')}</div><div class="map-moves">${moves.filter(m=>m.round_id===round.id).map(m=>mapNode('move',m,round)).join('')}</div>${roundResults.length||judgments.length||moves.some(m=>m.round_id===round.id)?'':'<p class="muted">이 라운드는 기록만 남겼어요.</p>'}</section>`;
+  }).join('');
+  const edge=(from,to,kind)=>{if(mapNodes.has(from)&&mapNodes.has(to))mapEdges.push({from,to,kind});};
+  for(const d of ds){edge('result-'+d.result_id,'decision-'+d.id,'judgment');if(d.previous_id)edge('decision-'+d.previous_id,'decision-'+d.id,'revision');}
+  for(const link of links)edge('decision-'+link.decision_id,'move-'+link.move_id,'intent');
+  for(const link of historyData.result_move_links||[])edge('move-'+link.move_id,'result-'+link.result_id,'continuation');
+  openModal(`<div class="bar"><div><p class="eyebrow">내가 이어 온 생각</p><h1>탐색 지도</h1></div><div class="actions">${button('history','기록 목록')}${button('download-history','기록 내려받기','ghost')}${button('close-modal','닫기')}</div></div><p class="map-intro">결과에서 판단으로, 판단에서 다음 시도로 이어져요. 노드를 누르면 이미지와 당시의 말을 볼 수 있어요.</p>${rounds.length?`<div class="map-legend"><span>결과 → 내 판단 → 다음 시도 → 새 결과</span><small>확정한 기록과 내가 고른 연결만 보여요.</small></div><nav class="map-round-nav" aria-label="라운드로 이동">${rounds.map(r=>button('map-round',`라운드 ${r.number}`,'ghost',`data-id="${r.id}"`)).join('')}</nav><div class="map-layout"><div class="map-scroll" tabindex="0" role="region" aria-label="탐색 지도. 가로로 스크롤해 다음 라운드를 볼 수 있어요."><div class="map-canvas"><svg class="map-lines" aria-hidden="true"></svg><div class="map-columns">${columns}</div></div></div><aside class="map-detail" aria-label="선택한 노드의 내용" aria-live="polite"><h2>기록을 살펴보세요</h2><p>결과, 판단, 다음 시도를 누르면 원문과 연결을 볼 수 있어요.</p></aside></div>`:'<section class="map-empty"><h2>탐색이 이어지면 여기에 보여요</h2><p>라운드를 기록하면 결과와 내 판단, 다음 시도가 지도에 남아요.<br>새 결과를 올릴 때 이전 시도와 연결할 수 있어요.</p>'+button('close-modal','작업으로 돌아가기','primary')+'</section>'}`);
+  modal.classList.add('map-modal');
+  if(rounds.length){requestAnimationFrame(drawMapEdges);if(typeof ResizeObserver!=='undefined'){mapObserver=new ResizeObserver(drawMapEdges);mapObserver.observe($('.map-canvas'));}document.fonts?.ready.then(()=>{if(modal.classList.contains('map-modal'))drawMapEdges();});}
+}
+function drawMapEdges() {
+  const canvas=$('.map-canvas'),svg=$('.map-lines');if(!canvas||!svg)return;
+  const bounds=canvas.getBoundingClientRect();svg.setAttribute('width',String(canvas.scrollWidth));svg.setAttribute('height',String(canvas.scrollHeight));
+  svg.innerHTML='<defs><marker id="map-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7" fill="#6e7569"/></marker></defs>';
+  for(const edge of mapEdges){
+    const from=$(`.map-node[data-id="${edge.from}"]`),to=$(`.map-node[data-id="${edge.to}"]`);if(!from||!to)continue;
+    const a=from.getBoundingClientRect(),b=to.getBoundingClientRect();let x1=a.right-bounds.left,y1=a.top+a.height/2-bounds.top,x2=b.left-bounds.left,y2=b.top+b.height/2-bounds.top;
+    let path;
+    if(edge.kind==='intent'&&Math.abs(a.left-b.left)<400&&b.top>a.bottom){x1=a.left+a.width/2-bounds.left;y1=a.bottom-bounds.top;x2=b.left+b.width/2-bounds.left;y2=b.top-bounds.top;const mid=(y1+y2)/2;path=`M${x1},${y1} C${x1},${mid} ${x2},${mid} ${x2},${y2}`;}
+    else{const bend=Math.max(24,Math.abs(x2-x1)*.45);path=`M${x1},${y1} C${x1+bend},${y1} ${x2-bend},${y2} ${x2},${y2}`;}
+    const element=document.createElementNS('http://www.w3.org/2000/svg','path');element.setAttribute('d',path);element.setAttribute('class','map-edge edge-'+edge.kind);element.setAttribute('marker-end','url(#map-arrow)');element.dataset.from=edge.from;element.dataset.to=edge.to;svg.appendChild(element);
+  }
+  highlightMap();
+}
+function highlightMap() {
+  const connected=new Set([selectedMapId]);for(const e of mapEdges)if(e.from===selectedMapId||e.to===selectedMapId){connected.add(e.from);connected.add(e.to);}
+  modal.querySelectorAll('.map-node').forEach(n=>{n.classList.toggle('map-dim',!!selectedMapId&&!connected.has(n.dataset.id));n.classList.toggle('selected',n.dataset.id===selectedMapId);n.setAttribute('aria-pressed',String(n.dataset.id===selectedMapId));});
+  modal.querySelectorAll('.map-edge').forEach(e=>{e.classList.toggle('map-dim',!!selectedMapId&&e.dataset.from!==selectedMapId&&e.dataset.to!==selectedMapId);e.classList.toggle('highlight',e.dataset.from===selectedMapId||e.dataset.to===selectedMapId);});
+}
+function selectMapNode(id) {
+  selectedMapId=id;highlightMap();const node=mapNodes.get(id),detail=$('.map-detail');if(!detail)return;
+  if(!node){detail.innerHTML='<h2>기록을 살펴보세요</h2><p>결과, 판단, 다음 시도를 누르면 원문과 연결을 볼 수 있어요.</p>';return;}
+  const incoming=mapEdges.filter(e=>e.to===id),outgoing=mapEdges.filter(e=>e.from===id);
+  const list=(edges,inbound)=>edges.length?`<ul class="map-related">${edges.map(e=>{const n=mapNodes.get(inbound?e.from:e.to);return `<li>${button('map-node',`<small>라운드 ${n.round.number}</small><span>${esc(n.title)}</span>`,'',`data-id="${n.id}"`)}</li>`;}).join('')}</ul>`:'<p class="muted">연결한 기록이 없어요.</p>';
+  detail.innerHTML=`<p class="eyebrow">라운드 ${node.round.number}</p><h2>${esc(node.title)}</h2>${node.kind==='result'?pic(node.row):`<p class="map-original">${esc(node.kind==='decision'?node.row.reason:node.row.content)}</p>`}${node.kind==='decision'&&node.row.reason!==node.row.original_text?`<details><summary>처음 한 말</summary><p class="map-original">${esc(node.row.original_text)}</p></details>`:''}<h3>이 기록으로 이어진 것</h3>${list(incoming,true)}<h3>이 기록에서 이어간 것</h3>${list(outgoing,false)}${button('map-clear','전체 연결 보기','ghost')}`;
+}
+
 function downloadJSON(value,name) { const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
 async function sendMessage(retry=null) {
   if(sending||!current)return;
@@ -189,6 +262,7 @@ function fileData(file) { return new Promise((resolve,reject)=>{const reader=new
 async function uploadFiles(files,context=false,retry=false) {
   if(uploadBusy||!files.length)return;
   if(!retry)pendingUploads=files.map(file=>({file,context,id:crypto.randomUUID()}));
+  const uploaded=[];
   uploadBusy=true;uploadError='';render();
   try {
     for(const item of [...pendingUploads]) {
@@ -196,12 +270,14 @@ async function uploadFiles(files,context=false,retry=false) {
       if(item.file.size>8*1024*1024)throw new Error('이미지 한 장은 8MB 이하여야 해요. 크기를 줄여 다시 골라주세요.');
       const image=await fileData(item.file);
       if(!current){await api('/rounds',{is_practice:!state.practice_completed});await refresh();}
-      await api(route('upload'),{image,is_context:item.context,request_id:item.id});
+      const saved=await api(route('upload'),{image,is_context:item.context,request_id:item.id});
+      if(!item.context)uploaded.push(saved.id);
       pendingUploads=pendingUploads.filter(x=>x!==item);
     }
     await refresh();
   } catch(error) { uploadError=error.message; }
   finally {uploadBusy=false;render();}
+  if(uploaded.length&&current&&!current.is_practice&&current.number>1){try{await showSources(uploaded,true);}catch(error){toast('이미지는 올렸어요. 이전 시도 연결은 다시 열어주세요. '+error.message);}}
 }
 function setupDrop() {
   const stage=$('#stage');if(!stage||current?.status==='checkpoint')return;
@@ -260,6 +336,14 @@ async function act(action,node) {
     }
     case 'start-real':modal.close();await api('/rounds',{is_practice:false});await refresh();view=null;render();break;
     case 'practice-again':modal.close();await api('/rounds',{is_practice:true});await refresh();view=null;render();break;
+    case 'map':await showMap();break;
+    case 'map-node':selectMapNode(id);break;
+    case 'map-round':$('#map-round-'+id)?.scrollIntoView({behavior:'smooth',block:'nearest',inline:'start'});break;
+    case 'map-clear':selectMapNode(null);break;
+    case 'sources':await showSources(results().map(r=>r.id));break;
+    case 'source-toggle':{const list=sourceDraft[node.dataset.result];sourceDraft[node.dataset.result]=list.includes(id)?list.filter(x=>x!==id):[...list,id];node.setAttribute('aria-pressed',String(sourceDraft[node.dataset.result].includes(id)));break;}
+    case 'source-save':await saveSources();break;
+    case 'source-skip':if(!sourceSaving){modal.close();toast('이미지는 그대로 두었어요. 이전 시도 연결은 나중에 고를 수 있어요.');}break;
     case 'history':await showHistory();break;
     case 'download-history':downloadJSON(historyData,'companion-history.json');break;
     case 'close-modal':modal.close();break;
