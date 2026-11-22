@@ -50,12 +50,10 @@ def run():
     # Upload three actual images through the file-picker flow.
     with page.expect_file_chooser() as chooser:page.locator('#upload-target').click()
     chooser.value.set_files([str(Path(f'companion/static/assets/cup-{i}.jpg').resolve()) for i in (1,2,3)])
-    expect(page.locator('.tile')).to_have_count(3)
+    expect(page.locator('.image-node')).to_have_count(3)
     messages={'A':'손잡이가 두꺼워 보여요.\n다음에는 손잡이 형태를 바꿔볼래요.','B':'옆면의 곡선이 눈에 들어와요.\n다른 곡선도 살펴볼래요.'}
     for label,content in messages.items():
-     if page.locator('[data-action="grid"]').count():page.locator('[data-action="grid"]').click()
-     page.get_by_role('button',name=f'{label} 크게 보기',exact=True).click()
-     page.get_by_role('button',name=f'{label}를 보며 말하기',exact=True).click()
+     page.get_by_role('button',name=f'{label} 이미지와 대화 보기',exact=True).click()
      page.locator('#message').fill(content);page.get_by_role('button',name='보내기',exact=True).click();expect(page.locator('#message')).to_have_value('')
     page.locator('[data-action="checkpoint"]').click();expect(page.locator('.coach-card')).to_have_count(0)
     expect(page.locator('.result-check')).to_have_count(1)
@@ -93,15 +91,15 @@ def run():
     page.route('**/api/rounds/*/record',lambda route:route.abort(),times=1)
     page.locator('[data-action="record"]').click();expect(page.locator('#record-error')).not_to_be_empty()
     expect(page.locator('#move-0')).to_have_value('다음에는 손잡이 형태를 바꿔볼래요.')
-    page.locator('[data-action="record"]').click();expect(page.locator('.banner')).to_contain_text('라운드 1을 기록했어요')
-    page.locator('[data-action="history"]').click();expect(page.locator('.history-list')).to_contain_text('A 제외');expect(page.locator('.history-list')).to_contain_text('B 아직 모르겠어요')
+    page.locator('[data-action="record"]').click();expect(page.locator('.team-badge')).to_have_text('나의 탐색')
+    page.locator('[data-action="canvas-more"]').click();page.locator('[data-action="history"]').click();expect(page.locator('.history-list')).to_contain_text('A 제외');expect(page.locator('.history-list')).to_contain_text('B 아직 모르겠어요')
     expect(page.locator('.history-list')).to_contain_text('다른 곡선도 살펴볼래요.')
     page.screenshot(path=str(OUTPUT/'recorded-history-desktop.png'),full_page=True)
     # Prior confirmed decisions are available in the next round, while unchosen C stays absent.
     page.locator('[data-action="close-modal"]').click()
     with page.expect_file_chooser() as chooser:page.locator('#upload-target').click()
-    chooser.value.set_files(str(Path('companion/static/assets/cup-1.jpg').resolve()));expect(page.locator('.tile')).to_have_count(1)
-    page.locator('[data-action="source-skip"]').click()
+    chooser.value.set_files(str(Path('companion/static/assets/cup-1.jpg').resolve()));expect(page.locator('.image-node')).to_have_count(4)
+    page.locator('[data-action="close-modal"]').click()
     page.locator('[data-action="checkpoint"]').click();page.locator('[data-action="checkpoint-next"]').click()
     expect(page.locator('.chip')).to_have_count(2);expect(page.locator('.chip').first).to_contain_text('라운드 1의 A 제외')
     expect(page.locator('.chip').nth(1)).to_contain_text('라운드 1의 B 아직 모르겠어요')
@@ -123,7 +121,7 @@ def run():
     assert {d['label'] for d in decisions}=={'EXCLUDE','UNDECIDED'}
     links=[x for x in rows['move_decision_links'] if x['move_id'] in {m['id'] for m in moves}];assert len(links)==2
     assert not errors,errors
-    summary={'browser':'Chromium','viewports':['1440x1000','390x844'],'passed':True,'recorded_decisions':len(decisions),'recorded_moves':len(moves),'recorded_links':len(links),'backend_api_changed':False,'console_errors':errors,'screenshots':sorted(x.name for x in OUTPUT.glob('*.png'))}
+    summary={'browser':'Chromium','viewports':['1440x1000','390x844'],'passed':True,'recorded_decisions':len(decisions),'recorded_moves':len(moves),'recorded_links':len(links),'console_errors':errors,'screenshots':sorted(x.name for x in OUTPUT.glob('*.png'))}
     (OUTPUT/'verification.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2))
     print(json.dumps(summary,ensure_ascii=False));browser.close()
   finally:server.shutdown();server.server_close();thread.join()

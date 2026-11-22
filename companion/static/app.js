@@ -24,7 +24,7 @@ const app = $('#app'), modal = $('#modal');
 let state, current, config = {}, view = null, attached = null, checkpoint = null, draft = null, sending = false, saving = false, uploadBusy = false, uploadError = '', pendingUploads = [], toastTimer;
 let sourceDraft=null,sourceCandidates=[],sourceSaving=false,mapNodes=new Map(),mapEdges=[],mapObserver=null;
 let guide = null, guideReturnFocus = null, guideReturnView = null, modalReturnFocus = null, lastReplyFailure = null, historyData = null;
-const key = type => `companion-v2:${state?.id}:${current?.id}:${type}`;
+const key = type => type==='compose'&&state?.practice_completed&&!current?.is_practice?`companion-v2:${state.id}:canvas:${attached||'general'}:compose`:`companion-v2:${state?.id}:${current?.id}:${type}`;
 function readLocal(name, fallback) { try { return JSON.parse(localStorage.getItem(name)) ?? fallback; } catch { return fallback; } }
 function writeLocal(name, value) { try { localStorage.setItem(name, JSON.stringify(value)); } catch { toast('이 브라우저에는 임시 내용을 보관할 수 없어요. 창을 닫기 전에 기록해주세요.'); } }
 function removeLocal(name) { try { localStorage.removeItem(name); } catch {} }
@@ -47,7 +47,7 @@ async function refresh() {
   state = await api('/state');
   for(const round of state.rounds) normalizeResultNames(round.results);
   current = state.rounds.find(x => x.status !== 'recorded') || null;
-  if (attached && !results().some(x => x.id === attached)) attached = null;
+  if (attached && !(current?.is_practice?results():state.rounds.filter(r=>!r.is_practice).flatMap(r=>r.results)).some(x => x.id === attached)) attached = null;
 }
 async function boot() {
   config = await api('/config');
@@ -60,15 +60,18 @@ async function boot() {
   } catch(error) { if(error.status===401) renderLogin(); else { renderLogin(); $('#login-error').textContent=error.message; } }
 }
 function renderLogin() {
+  document.body.classList.remove('redesign');
   app.innerHTML = `<main class="entry"><section class="entry-card"><div class="mark" aria-hidden="true">c.</div><div><h1>나의 디자인 탐색 기록</h1><p class="muted">보고, 말하고, 내 판단으로 남겨요.</p></div><form id="login"><label for="code">참여 코드</label><input id="code" name="code" type="password" autocomplete="off" maxlength="128" required placeholder="받은 참여 코드를 입력해주세요"><button class="primary" type="submit">탐색 열기</button><p id="login-error" class="error" role="alert"></p></form><p class="muted">처음이라면 컵 사진으로 한 번 연습해요.</p>${config.demo?'<small>화면 테스트용이에요. 대화에는 정해진 응답을 사용해요.</small>':''}</section></main>`;
 }
 function header() {
   const recent=state.rounds.filter(x=>!x.is_practice).slice(-4);
-  return `<header class="top"><div class="brand"><b>Companion</b><span>의자 형태 탐색</span></div><ol class="rounds" aria-label="라운드">${current?.is_practice?'<li class="practice" aria-current="step">연습 라운드</li>':recent.map(r=>`<li class="${r.id===current?.id?'now':''}" ${r.id===current?.id?'aria-current="step"':''}><span class="round-number">${r.number}</span>${r.status==='recorded'?'기록됨':r.status==='checkpoint'?'확인 중':'진행 중'}</li>`).join('')}</ol><span class="spacer"></span>${button('guide','사용 안내','ghost')}${button('map','탐색 지도')}${button('history','기록 목록','ghost')}${button('logout','나가기','ghost')}</header>`;
+  return `<header class="top"><div class="brand"><b>Companion</b><span>의자 형태 탐색</span></div><ol class="rounds" aria-label="라운드">${current?.is_practice?'<li class="practice" aria-current="step">연습 라운드</li>':recent.map(r=>`<li class="${r.id===current?.id?'now':''}" ${r.id===current?.id?'aria-current="step"':''}><span class="round-number">${r.number}</span>${r.status==='recorded'?'기록됨':r.status==='checkpoint'?'확인 중':'진행 중'}</li>`).join('')}</ol><span class="spacer"></span>${button('criterion','1순위 기준','ghost')}${button('guide','사용 안내','ghost')}${button('map','탐색 지도')}${button('history','기록 목록','ghost')}${button('logout','나가기','ghost')}</header>`;
 }
 function render() {
   if(!state) return;
-  app.innerHTML=`${config.demo?'<div class="notice" role="note">화면 테스트 · 정해진 대화 응답을 사용해요. 실제 AI 대화가 아니에요.</div>':''}<div class="app">${header()}<div class="body"><main class="stage" id="stage"><div class="workspace-heading"><b>${current?.status==='checkpoint'?'라운드 확인':'이미지 작업대'}</b><span>${current?.status==='checkpoint'?'내 판단으로 남기기':'결과를 올리고 살펴보는 곳'}</span></div>${current?.status==='checkpoint'?checkpointHTML():stageHTML()}</main><aside class="side" aria-label="대화">${chatHTML()}</aside></div></div>`;
+  if(state.practice_completed&&!current?.is_practice){renderCanvasApp();return;}
+  document.body.classList.remove('redesign');
+  app.innerHTML=`${config.demo?'<div class="notice" role="note">화면 테스트 · 정해진 대화 응답을 사용해요. 실제 AI 대화가 아니에요.</div>':''}<div class="app">${header()}<div class="body"><main class="stage" id="stage"><div class="workspace-heading"><b>${current?.status==='checkpoint'?'라운드 확인':'이미지 작업대'}</b><span>${current?.status==='checkpoint'?'내 판단으로 남기기':'결과를 올리고 살펴보는 곳'}</span></div>${!current?.is_practice?`<div class="criterion-strip"><span><b>1순위 기준</b> ${state.card?.priority?esc(state.card.priority):'아직 적지 않았어요.'}</span>${button('criterion',state.card?.priority?'고치기':'적기','ghost')}</div>`:''}${current?.status==='checkpoint'?checkpointHTML():stageHTML()}</main><aside class="side" aria-label="대화">${chatHTML()}</aside></div></div>`;
   const input=$('#message'); if(input) input.value=readLocal(key('compose'),{text:''}).text;
   setupDrop();
 }
@@ -103,6 +106,7 @@ async function loadCheckpoint() {
   const stored=readLocal(key('checkpoint'),null);
   draft=stored||{decisions:{},moves:[],revisions:{}};
   for(const r of checkpoint.results) {
+    if(r.judgment&&!draft.decisions[r.id])draft.decisions[r.id]={label:r.judgment.label,reason:r.judgment.reason,original:r.original_text};
     if(r.discussed&&!draft.decisions[r.id]) draft.decisions[r.id]={label:null,reason:r.original_text};
     // A resumed conversation may have new words; update only reasons the student has not edited.
     const d=draft.decisions[r.id];
@@ -159,9 +163,9 @@ function checkpointStage(step,focusId) {
   draftSave();render();
   $('#checkpoint-heading')?.focus({preventScroll:true});$('#stage')?.scrollIntoView({block:'start',behavior:'instant'});
 }
-function openModal(html) { mapObserver?.disconnect();modal.classList.remove('map-modal','source-modal');if(!modal.open)modalReturnFocus=document.activeElement;modal.innerHTML=`<div class="modal-body">${html}</div>`;if(!modal.open)modal.showModal(); }
+function openModal(html) { mapObserver?.disconnect();modal.classList.remove('map-modal','source-modal','lineage-modal');if(!modal.open)modalReturnFocus=document.activeElement;modal.innerHTML=`<div class="modal-body">${html}</div>`;if(!modal.open)modal.showModal(); }
 modal.addEventListener('close',()=>{mapObserver?.disconnect();modalReturnFocus?.isConnected&&modalReturnFocus.focus();});
-modal.addEventListener('cancel',event=>{if(sourceSaving)event.preventDefault();});
+modal.addEventListener('cancel',event=>{if(sourceSaving||lineageBusy)event.preventDefault();});
 function practiceDone() { openModal(`<h1>연습을 마쳤어요</h1><p>이제 내 결과를 올리고 탐색을 시작할 수 있어요.<br>연습에서 한 말과 판단은 연구 기록에 들어가지 않아요.</p><div class="actions">${button('practice-again','연습 한 번 더 하기')}${button('start-real','라운드 1 시작','primary')}</div>`); }
 async function showHistory() {
   historyData=await api('/history');
@@ -242,16 +246,19 @@ function selectMapNode(id) {
 
 function downloadJSON(value,name) { const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
 async function sendMessage(retry=null) {
-  if(sending||!current)return;
+  if(sending)return;
+  if(!current&&state.practice_completed){try{await api('/rounds',{is_practice:false});await refresh();}catch(error){toast(error.message);return;}}
+  if(!current)return;
   let pending=retry||readLocal(key('compose'),{text:''});
   const text=retry?.content??$('#message').value;
   if(!text.trim())return;
   const request=retry||{content:text,result_id:pending.request_id?pending.result_id:attached,request_id:pending.request_id||crypto.randomUUID()};
-  if(!retry)writeLocal(key('compose'),{text,request_id:request.request_id,result_id:attached});
+  const composeKey=retry&&state.practice_completed&&!current.is_practice?`companion-v2:${state.id}:canvas:${retry.result_id||'general'}:compose`:key('compose');
+  if(!retry)writeLocal(composeKey,{text,request_id:request.request_id,result_id:attached});
   sending=true;render();
   try {
     const response=await api(route('turn'),request);
-    if(response.saved){removeLocal(key('compose'));lastReplyFailure=response.reply?null:request;}
+    if(response.saved){if(readLocal(composeKey,{}).text===request.content)removeLocal(composeKey);lastReplyFailure=response.reply?null:request;}
     await refresh();
     sending=false;render();
     if(response.error)toast(response.error);else $('#message')?.focus();
@@ -277,7 +284,7 @@ async function uploadFiles(files,context=false,retry=false) {
     await refresh();
   } catch(error) { uploadError=error.message; }
   finally {uploadBusy=false;render();}
-  if(uploaded.length&&current&&!current.is_practice&&current.number>1){try{await showSources(uploaded,true);}catch(error){toast('이미지는 올렸어요. 이전 시도 연결은 다시 열어주세요. '+error.message);}}
+  if(uploaded.length&&current&&!current.is_practice){attached=uploaded.at(-1);render();try{await showLineage(uploaded);}catch(error){toast('이미지는 올렸어요. 출처는 이미지의 고치기에서 다시 고를 수 있어요. '+error.message);}}
 }
 function setupDrop() {
   const stage=$('#stage');if(!stage||current?.status==='checkpoint')return;
@@ -302,7 +309,10 @@ document.addEventListener('submit',async e=>{
 });
 async function act(action,node) {
   const id=node.dataset.id,index=Number(node.dataset.index);
+  if(/^(canvas-|lineage-|card-)/.test(action)){await canvasAction(action,node);return;}
   switch(action){
+    case 'criterion':if(state.practice_completed&&!current?.is_practice){openCard();break;}openModal(`<h1>1순위 기준</h1><p>이번 탐색에서 가장 중요하게 지키려는 기준을 내 말로 적어주세요.</p><label for="priority">가장 중요한 기준과 이유</label><textarea id="priority" maxlength="1000" rows="4">${esc(state.card?.priority||'')}</textarea><p class="muted">고치기 전의 기준도 기록에 남아요.</p><p id="criterion-error" class="error" role="alert"></p><div class="actions">${button('close-modal','닫기')}${button('save-criterion','저장','primary')}</div>`);break;
+    case 'save-criterion':node.disabled=true;try{await api('/card',{priority:$('#priority').value});await refresh();modal.close();render();toast('1순위 기준을 저장했어요.');}catch(error){$('#criterion-error').textContent=error.message;node.disabled=false;}break;
     case 'upload':pickFiles();break;
     case 'upload-context':pickFiles(true);break;
     case 'retry-upload':await uploadFiles(pendingUploads.map(x=>x.file),false,true);break;
@@ -348,7 +358,7 @@ async function act(action,node) {
     case 'download-history':downloadJSON(historyData,'companion-history.json');break;
     case 'close-modal':modal.close();break;
     case 'context':{const r=current.results.find(x=>x.is_context);openModal(`<div class="bar"><h2>생성 화면</h2>${button('close-modal','닫기')}</div>${pic(r)}<p class="muted">결과를 만든 맥락 자료예요.</p>`);break;}
-    case 'guide':if(current?.status==='checkpoint'&&draft.ui.step!==1)checkpointStage(1);startGuide(current?.status==='checkpoint');break;
+    case 'guide':if(state.practice_completed&&!current?.is_practice&&current?.status!=='checkpoint'){openModal(`<h1>탐색 캔버스 사용하기</h1><p>이미지를 올리고 출처를 고르면 선이 이어져요. 이미지를 누르면 오른쪽에서 그 이미지의 대화를 볼 수 있어요.</p><p>선택·보류·제외·아직 모르겠어요는 직접 고릅니다. 발언과 판단은 따로 저장돼요.</p>${button('close-modal','닫기')}`);break;}if(current?.status==='checkpoint'&&draft.ui.step!==1)checkpointStage(1);startGuide(current?.status==='checkpoint');break;
     case 'guide-next':if(guide.checkpoint||guide.step===4)await closeGuide();else{guide.step++;drawGuide();}break;
     case 'guide-close':await closeGuide();break;
     case 'logout':await api('/logout',{});state=null;current=null;renderLogin();break;
@@ -397,4 +407,76 @@ document.addEventListener('keydown',e=>{
   if(e.target.matches('[role="radio"]')&&['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)){e.preventDefault();const group=[...e.target.parentElement.querySelectorAll('[role="radio"]')],i=group.indexOf(e.target);group[(i+(['ArrowLeft','ArrowUp'].includes(e.key)?-1:1)+group.length)%group.length].click();}
   if(e.key==='Escape'&&view&&!modal.open){view=null;render();}
 });
+// Working canvas from the supplied 06 artboard. Relationships are explicitly chosen.
+let canvasScreen='explore',canvasTab='canvas',canvasZoom=1,cardStep=0,cardDraft=null,lineageDraft=null,lineageBusy=false,canvasSaving=false;
+const canvasItems=()=>{const rows=state.rounds.filter(r=>!r.is_practice).flatMap(r=>r.results.filter(x=>!x.is_context)),order=new Map(rows.map((r,i)=>[r.id,i]));return rows.map((x,i)=>({...x,canvasName:ordinalName(i),parent_ids:[...(x.parent_ids||[])].sort((a,b)=>order.get(a)-order.get(b))}));};
+const canvasTitle=r=>r?.canvasName||r?.label||'결과';
+const latestJudgment=r=>r?.judgments?.at(-1);
+function stateChip(label){return `<span class="judgment-chip chip-${label||'empty'}">${names[label]||'판단 전'}</span>`;}
+function canvasHeader(){return `<header class="design-header"><div><b>탐색 기록</b><span class="team-badge">${current?roundTitle(current):'나의 탐색'}</span></div><nav>${button('criterion','카드 보기','ghost')}${button('canvas-summary','정리본','ghost')}${button('canvas-more','더 보기','ghost')}${button(current?.status==='checkpoint'?'reopen':'checkpoint',current?.status==='checkpoint'?'탐색으로 돌아가기':'마무리하고 정리하기','primary',!current?'disabled':'')}</nav></header>`;}
+function criterionSummary(){return `<section class="card-strip" aria-label="기준·의도 카드 요약"><div><b>1순위 기준</b><span>${esc(state.card?.priority||'아직 적지 않았어요.')}</span></div><div><b>탐색 질문</b><span>${esc(state.card?.question||'아직 적지 않았어요.')}</span></div>${!state.card?button('criterion','카드 적기','ghost'):''}</section>`;}
+function renderCanvasApp(){
+ document.body.classList.add('redesign');
+ if(canvasScreen==='card'){renderCard();return;}
+ if(canvasScreen==='summary'){renderSummary();return;}
+ const cp=current?.status==='checkpoint';
+ app.innerHTML=`${config.demo?'<div class="notice">화면 테스트 · 정해진 대화 응답을 사용해요. 실제 AI 대화가 아니에요.</div>':''}${canvasHeader()}<div class="design-wrap">${criterionSummary()}<nav class="mobile-tabs" aria-label="탐색 화면">${button('canvas-tab','결과','',`data-tab="canvas" aria-pressed="${canvasTab==='canvas'}"`)}${button('canvas-tab','대화','',`data-tab="chat" aria-pressed="${canvasTab==='chat'}"`)}${button('canvas-summary','기록')}</nav><div class="design-workspace ${cp?'design-checkpoint':''}" data-tab="${canvasTab}"><main id="stage" class="${cp?'stage':'canvas-panel'}">${cp?checkpointHTML():canvasHTML()}</main><aside class="side design-chat" aria-label="선택한 이미지의 대화">${cp?chatHTML():canvasChat()}</aside></div></div>`;
+ const input=$('#message');if(input)input.value=readLocal(key('compose'),{text:''}).text;
+ setupDrop();const log=$('.design-chat .log');if(log)log.scrollTop=log.scrollHeight;
+}
+function canvasHTML(){
+ const items=canvasItems(),depth=new Map(),heights=new Map(),positions=new Map();
+ for(const r of items){const d=Math.max(0,...(r.parent_ids||[]).map(id=>(depth.get(id)||0)+1));depth.set(r.id,d);const y=heights.get(d)??(d?114:22);positions.set(r.id,{x:40+d*406,y,w:attached===r.id?290:242,h:latestJudgment(r)?.label==='EXCLUDE'?76:300});heights.set(d,y+(latestJudgment(r)?.label==='EXCLUDE'?204:340));}
+ const width=Math.max(900,...[...positions.values()].map(p=>p.x+p.w+60)),height=Math.max(690,...[...heights.values()].map(y=>y+120));
+ const links=items.flatMap(r=>(r.parent_ids||[]).map(parent=>({parent,child:r.id})));const byId=new Map(items.map(r=>[r.id,r]));
+ const paths=links.map(l=>{const a=positions.get(l.parent),b=positions.get(l.child);if(!a||!b)return '';const gray=latestJudgment(byId.get(l.parent))?.label==='EXCLUDE';const x=a.x+a.w,y=a.y+a.h/2,tx=b.x,ty=b.y+b.h/2;return `<path class="lineage-edge ${gray?'excluded-edge':''}" d="M${x} ${y} C${x+110} ${y},${tx-110} ${ty},${tx} ${ty}" marker-end="url(#${gray?'canvas-arrow-muted':'canvas-arrow'})"/>`;}).join('');
+ return `<div class="canvas-toolbar"><b>이미지 ${items.length} · 연결 ${links.length}</b><div>${button('canvas-zoom','−','ghost','data-delta="-0.1" aria-label="캔버스 축소"')}<span>${Math.round(canvasZoom*100)}%</span>${button('canvas-zoom','＋','ghost','data-delta="0.1" aria-label="캔버스 확대"')}${button('upload','＋ 이미지 올리기','primary',`id="upload-target" ${uploadBusy?'disabled':''}`)}</div></div><div class="canvas-viewport" tabindex="0" aria-label="이미지 출처 캔버스, 가로와 세로로 이동할 수 있어요"><div style="width:${width*canvasZoom}px;height:${height*canvasZoom}px"><div class="canvas-surface" style="width:${width}px;height:${height}px;transform:scale(${canvasZoom})"><svg class="canvas-lines" width="${width}" height="${height}" aria-hidden="true"><defs><marker id="canvas-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#111"/></marker><marker id="canvas-arrow-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#a8a8a8"/></marker></defs>${paths}</svg>${items.map(r=>{const p=positions.get(r.id),j=latestJudgment(r),excluded=j?.label==='EXCLUDE',turns=state.rounds.flatMap(x=>x.turns).filter(t=>t.result_id===r.id);return `<div class="canvas-node-wrap" style="left:${p.x}px;top:${p.y}px;width:${p.w}px">${r.parent_ids?.length?`<span class="node-parents">${r.parent_ids.map(id=>esc(canvasTitle(byId.get(id)))).join(' + ')}에서 이어짐</span>`:''}<button type="button" data-action="canvas-select" data-id="${r.id}" class="image-node ${excluded?'is-excluded':''}" aria-pressed="${attached===r.id}" aria-label="${canvasTitle(r)} 이미지와 대화 보기"><img src="${esc(r.image)}" alt="${canvasTitle(r)} 결과"><div class="node-meta"><b>${canvasTitle(r)}</b>${stateChip(j?.label)}</div>${!excluded?`<p>${j?.reason?`“${esc(j.reason)}”`:'<span class="muted">이유 미기록</span>'}</p><small>대화 ${turns.length}${attached===r.id?' · 오른쪽에서 열림':''}</small>`:''}</button></div>`;}).join('')}<button class="canvas-drop" id="drop-zone" data-action="upload" style="left:${items.length?Math.min(width-350,446):Math.max(40,(width-350)/2)}px;top:${Math.max(440,...[...positions.values()].map(p=>p.y+p.h+24))}px" ${uploadBusy?'disabled':''}><b>${uploadBusy?'이미지를 올리고 있어요':'Midjourney 결과를 끌어다 놓기'}</b><span>올릴 때 어디서 이어졌는지 골라요</span></button></div></div></div><div class="canvas-legend"><span>― 출처 연결</span><span class="muted">― 제외한 이미지에서 온 연결</span><span>선은 학생이 고른 출처로만 생겨요</span><span>${stateChip(null)} 아직 고르지 않음</span><span>${stateChip('HOLD')} 판단했고, 다시 볼 후보로 남김</span><span>${stateChip('UNDECIDED')} 느낀 건 있지만 아직 정하지 못함</span></div><div class="canvas-status" role="status">${esc(uploadError)}${uploadError&&pendingUploads.length?button('retry-upload','다시 올리기'):''}</div>`;
+}
+function canvasChat(){
+ const items=canvasItems(),r=items.find(r=>r.id===attached),j=latestJudgment(r),turns=state.rounds.filter(x=>!x.is_practice).flatMap(x=>x.turns).filter(t=>r?t.result_id===r.id:!t.result_id);
+ return `<div class="selected-header"><div class="selected-top">${r?`<button class="selected-image" data-action="canvas-enlarge" aria-label="이미지 크게 보기"><img src="${esc(r.image)}" alt="${canvasTitle(r)}"></button>`:''}<div><b>${r?canvasTitle(r):'이미지를 선택해 대화해요'}</b><div class="judgment-controls" role="group" aria-label="이미지 판단">${r?Object.entries(names).map(([value,name])=>button('canvas-judge',name,'judgment-chip',`data-value="${value}" aria-pressed="${j?.label===value}" title="${meanings[value]}" ${canvasSaving?'disabled':''}`)).join(''):''}</div></div></div>${r?`<small>출처 ${r.parent_ids?.length?r.parent_ids.map(id=>canvasTitle(items.find(x=>x.id===id))).join(' · '):'새로 시작'} ${r.round_id===current?.id?button('canvas-sources','고치기','ghost'):''}</small><small>판단 이력 · ${r.judgments?.length?r.judgments.filter((d,i,all)=>!i||d.label!==all[i-1].label).map(d=>names[d.label]).join(' → '):'아직 고르지 않음'}</small><div class="selected-reason">${j?.reason?`<span>“${esc(j.reason)}”</span>`:'<span class="muted">이유 미기록</span>'}${j?button('canvas-reason','이유 '+(j.reason?'고치기':'적기'),'ghost'):''}</div>`:''}</div><div class="log" aria-live="polite">${turns.map(t=>`<div class="canvas-message ${t.role}"><p>${esc(t.content)}</p>${t.role==='user'?'<small>발언 저장됨 · 판단은 별도</small>':''}</div>`).join('')}${!turns.length?'<p class="conversation-empty">이미지를 보며 떠오른 생각을 적어 주세요.</p>':''}${sending?'<div class="canvas-message assistant"><p role="status">기록 모델이 읽고 있어요…</p></div>':''}${lastReplyFailure?`<div class="reply-failure"><p>발언은 저장됐지만 답을 받지 못했어요.</p>${button('retry-reply','다시 답 받기')}</div>`:''}</div><form id="compose" class="canvas-compose"><label class="sr-only" for="message">${r?canvasTitle(r)+'에 대한 메시지':'메시지'}</label><textarea id="message" rows="3" maxlength="20000" placeholder="${r?canvasTitle(r)+'에 대한 메시지':'이미지를 보고 생각한 것을 적어 주세요'}"></textarea><button type="submit" class="primary" ${sending?'disabled':''}>${sending?'보내는 중':'보내기'}</button><p id="send-error" class="error" role="alert"></p></form>`;
+}
+function openCard(){canvasScreen='card';cardStep=state.card?2:0;cardDraft=readLocal(`card:${state.id}`,null)||{issue:state.card?.issue||'',image:state.card?.image||'',priority:state.card?.priority||'',secondary:state.card?.secondary||'',question:state.card?.question||''};render();}
+function renderCard(){
+ const steps=['의도','떠오르는 이미지','판단 기준','탐색 질문'];const headings=['어떤 디자인을 탐색하려고 하나요?','지금 떠오르는 이미지는 어떤 모습인가요?','이 디자인의 판단 기준은 무엇이고, 왜 그런가요?','이번 탐색에서 무엇을 알아보고 싶나요?'];const fields=[['issue','프로젝트와 해결하려는 문제'],['image','떠오르는 이미지'],['priority','1순위 기준'],['question','탐색 질문']];const [field,label]=fields[cardStep];
+ app.innerHTML=`<header class="design-header"><b>탐색 기록</b>${button('card-exit','탐색으로 돌아가기','ghost')}</header><main class="card-page"><nav aria-label="카드 작성 단계"><b>기준·의도 카드 ${cardStep+1} / 4</b>${steps.map((s,i)=>button('card-step',`<span>${i<cardStep?'✓':i+1}</span>${s}`,i===cardStep?'active':'',`data-step="${i}" ${i===cardStep?'aria-current="step"':''}`)).join('')}</nav><section><h1>${headings[cardStep]}</h1><p class="card-description">${cardStep===2?'중요한 순서대로, 이유와 함께 적어 주세요. 탐색하는 동안 내 선택을 이 기준과 함께 보여 줘요.':'내가 생각한 내용을 그대로 적어 주세요. 나중에 다시 고칠 수 있어요.'}</p><label for="${field}">${label}</label><textarea id="${field}" data-card-field="${field}" rows="4" maxlength="${field==='priority'?1000:2000}">${esc(cardDraft[field])}</textarea>${cardStep===2?`<label for="secondary">2순위 기준 (선택)</label><textarea id="secondary" data-card-field="secondary" rows="2" maxlength="2000">${esc(cardDraft.secondary)}</textarea><div class="card-help"><b>이렇게 써 보세요</b><p>‘편안하게’보다 ‘눈부시지 않게’처럼 결과를 보고 확인할 수 있는 말로, 이유를 함께 적어요.</p></div>`:''}<p id="criterion-error" class="error" role="alert"></p><div class="card-footer">${button('card-step','이전','secondary',`data-step="${Math.max(0,cardStep-1)}" ${cardStep===0?'disabled':''}`)}${cardStep<3?button('card-step','다음','primary',`data-step="${cardStep+1}"`):button('card-save','저장하고 탐색하기','primary')}${state.card&&cardStep<3?button('card-save','저장','primary'):''}</div></section></main>`;
+}
+function renderSummary(){const items=canvasItems();app.innerHTML=`<header class="design-header"><b>탐색 기록</b><nav>${button('canvas-back','탐색으로 돌아가기','ghost')}${button('canvas-download','정리본 내려받기','primary')}</nav></header><main class="summary-page"><div class="summary-title"><small>나의 탐색</small><h1>오늘의 탐색 정리</h1><div>결과 <b>${items.length}개</b>　판단 <b>${items.filter(r=>latestJudgment(r)).length}개</b></div></div><h2>결과별 판단</h2><div class="summary-results">${items.map(r=>{const j=latestJudgment(r);return `<article><img src="${esc(r.image)}" alt="${canvasTitle(r)}"><div><header><b>${canvasTitle(r)}</b>${stateChip(j?.label)}</header><small>이유</small><p>${j?.reason?`“${esc(j.reason)}”`:'아직 적지 않았어요.'}</p>${button('canvas-summary-select','이미지와 대화 보기','ghost',`data-id="${r.id}"`)}</div></article>`;}).join('')||'<p>아직 올린 결과가 없어요.</p>'}</div><section class="summary-card"><h2>기준·의도 카드</h2><small>현재 1순위 기준</small><p>${esc(state.card?.priority||'아직 적지 않았어요.')}</p><small>탐색 질문</small><p>${esc(state.card?.question||'아직 적지 않았어요.')}</p>${button('criterion','카드 보기','ghost')}</section><section class="summary-card"><h2>기록과 다음 행동</h2><p>라운드 확인에서 남긴 판단과 다음 행동을 볼 수 있어요.</p>${button('history','기록 목록')}${button('map','탐색 지도','ghost')}</section></main>`;}
+async function showLineage(ids){
+ const items=canvasItems(),eligible=items.filter(r=>!ids.includes(r.id));if(!eligible.length)return;
+ lineageDraft=Object.fromEntries(ids.map(id=>[id,[...(items.find(r=>r.id===id)?.parent_ids||[])]]));
+ openModal(`<h1>어디서 이어졌나요?</h1><p>이 이미지를 만들 때 바탕이 된 이미지를 모두 골라 주세요. 고른 이미지에서 선이 이어져요.</p>${ids.map(id=>{const target=items.find(r=>r.id===id),index=items.findIndex(r=>r.id===id);return `<section class="lineage-choice-section"><div class="lineage-target"><img src="${esc(target.image)}" alt="${canvasTitle(target)}"><b>${canvasTitle(target)}</b></div><div class="lineage-options">${eligible.filter(r=>items.indexOf(r)<index).map(r=>button('lineage-toggle',`<img src="${esc(r.image)}" alt=""><b>${canvasTitle(r)}</b><small>${names[latestJudgment(r)?.label]||'판단 전'}</small>`,'lineage-option',`data-result="${id}" data-id="${r.id}" aria-pressed="${lineageDraft[id].includes(r.id)}"`)).join('')}${button('lineage-root','<b>새로 시작</b><small>연결 없이 올려요</small>','lineage-option',`data-result="${id}" aria-pressed="${!lineageDraft[id].length}"`)}</div></section>`;}).join('')}<p class="lineage-note">출처로 골라도 그 이미지가 선택되지는 않아요. 새 이미지는 ‘판단 전’으로 올라가고, 판단은 따로 정해요.</p><p id="lineage-error" class="error" role="alert"></p><div class="lineage-footer">${button('close-modal','나중에 고르기')}${button('lineage-save','출처 저장','primary')}</div>`);modal.classList.add('lineage-modal');
+}
+async function saveCanvasJudgment(label,reason,node){
+ if(canvasSaving)return;const r=canvasItems().find(x=>x.id===attached);if(!r)return;
+ const payload={result_id:r.id,label,reason};const cacheKey=`judgment:${state.id}:${r.id}`,old=readLocal(cacheKey,null);payload.request_id=old&&JSON.stringify(old.payload)===JSON.stringify(payload)?old.id:crypto.randomUUID();writeLocal(cacheKey,{payload:{result_id:r.id,label,reason},id:payload.request_id});
+ canvasSaving=true;node.disabled=true;
+ try{if(!current){await api('/rounds',{is_practice:false});await refresh();}await api(route('judgment'),payload);removeLocal(cacheKey);await refresh();if(modal.open)modal.close();render();toast('판단을 저장했어요. 발언과 출처 연결은 그대로 남아요.');}
+ finally{canvasSaving=false;node.disabled=false;document.querySelectorAll('[data-action="canvas-judge"]').forEach(b=>b.disabled=false);}
+}
+async function canvasAction(action,node){
+ switch(action){
+ case 'canvas-select':case 'canvas-summary-select':attached=node.dataset.id;canvasScreen='explore';render();return true;
+ case 'canvas-tab':canvasTab=node.dataset.tab;render();return true;
+ case 'canvas-zoom':canvasZoom=Math.max(.4,Math.min(1.5,canvasZoom+Number(node.dataset.delta)));render();return true;
+ case 'canvas-enlarge':{const r=canvasItems().find(x=>x.id===attached);openModal(`<div class="bar"><h2>${canvasTitle(r)}</h2>${button('close-modal','닫기')}</div>${pic(r)}`);return true;}
+ case 'canvas-judge':if(latestJudgment(canvasItems().find(r=>r.id===attached))?.label!==node.dataset.value)await saveCanvasJudgment(node.dataset.value,latestJudgment(canvasItems().find(r=>r.id===attached))?.reason||'',node);return true;
+ case 'canvas-reason':{const j=latestJudgment(canvasItems().find(r=>r.id===attached));openModal(`<h1>내 판단의 이유</h1><label for="canvas-reason">이렇게 판단한 이유를 내 말로 적어 주세요.</label><textarea id="canvas-reason" rows="4" maxlength="20000">${esc(j.reason)}</textarea><p id="reason-error" class="error" role="alert"></p><div class="actions">${button('close-modal','취소')}${button('canvas-reason-save','저장','primary',`data-value="${j.label}"`)}</div>`);return true;}
+ case 'canvas-reason-save':try{await saveCanvasJudgment(node.dataset.value,$('#canvas-reason').value,node);}catch(e){$('#reason-error').textContent=e.message;}return true;
+ case 'canvas-sources':await showLineage([attached]);return true;
+ case 'lineage-toggle':{const ids=lineageDraft[node.dataset.result];lineageDraft[node.dataset.result]=ids.includes(node.dataset.id)?ids.filter(x=>x!==node.dataset.id):[...ids,node.dataset.id];node.setAttribute('aria-pressed',String(lineageDraft[node.dataset.result].includes(node.dataset.id)));$(`[data-action="lineage-root"][data-result="${node.dataset.result}"]`).setAttribute('aria-pressed',String(!lineageDraft[node.dataset.result].length));return true;}
+ case 'lineage-root':lineageDraft[node.dataset.result]=[];document.querySelectorAll(`[data-action="lineage-toggle"][data-result="${node.dataset.result}"]`).forEach(b=>b.setAttribute('aria-pressed','false'));node.setAttribute('aria-pressed','true');return true;
+ case 'lineage-save':if(lineageBusy)return true;lineageBusy=true;modal.querySelectorAll('button').forEach(b=>b.disabled=true);try{await api(route('lineage'),{results:Object.entries(lineageDraft).map(([result_id,parent_ids])=>({result_id,parent_ids}))});await refresh();modal.close();render();}catch(e){$('#lineage-error').textContent=e.message;}finally{lineageBusy=false;modal.querySelectorAll('button').forEach(b=>b.disabled=false);}return true;
+ case 'canvas-summary':canvasScreen='summary';render();return true;
+ case 'canvas-back':canvasScreen='explore';render();return true;
+ case 'canvas-download':downloadJSON({card:state.card,results:canvasItems(),history:await api('/history')},'탐색-정리본.json');return true;
+ case 'canvas-more':openModal(`<h2>탐색 메뉴</h2><div class="actions">${button('map','탐색 지도')}${button('history','기록 목록')}${current&&current.number>1&&results().length?button('sources','이전 시도 연결'):''}${button('guide','사용 안내')}${button('upload-context','생성 화면 올리기')}${current?.results.some(r=>r.is_context)?button('context','생성 화면 보기'):''}${button('logout','나가기')}${button('close-modal','닫기')}</div>`);return true;
+ case 'card-step':cardStep=Number(node.dataset.step);render();return true;
+ case 'card-exit':canvasScreen='explore';render();return true;
+ case 'card-save':node.disabled=true;try{await api('/card',cardDraft);removeLocal(`card:${state.id}`);await refresh();canvasScreen='explore';render();}catch(e){$('#criterion-error').textContent=e.message;node.disabled=false;}return true;
+ }
+ return false;
+}
+document.addEventListener('input',e=>{if(e.target.dataset.cardField){cardDraft[e.target.dataset.cardField]=e.target.value;writeLocal(`card:${state.id}`,cardDraft);}});
+
 boot().catch(error=>{app.innerHTML='<p class="loading">앱을 열지 못했어요. 새로고침해주세요.</p>';toast(error.message);});

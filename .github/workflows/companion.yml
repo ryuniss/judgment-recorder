@@ -26,6 +26,8 @@ jobs:
       - run: python -m playwright install --with-deps chromium
       - run: QA_OUTPUT=work/browser-check python -m companion.tests.browser_check
       - run: QA_OUTPUT=work/browser-check python -m companion.tests.map_check
+      - run: QA_OUTPUT=work/browser-check python -m companion.tests.q6_browser
+      - run: QA_OUTPUT=work/browser-check python -m companion.tests.canvas_browser
       - uses: actions/upload-artifact@v4
         if: always()
         with:

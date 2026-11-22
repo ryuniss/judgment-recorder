@@ -53,3 +53,32 @@ CREATE TABLE IF NOT EXISTS result_move_links (
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
  PRIMARY KEY(result_id,move_id)
 );
+
+-- Append-only student card versions and per-turn protocol snapshots.
+CREATE TABLE IF NOT EXISTS criterion_cards (
+ id TEXT PRIMARY KEY, participant_id TEXT NOT NULL REFERENCES participants(id),
+ priority TEXT NOT NULL, issue TEXT NOT NULL DEFAULT '', image TEXT NOT NULL DEFAULT '', secondary TEXT NOT NULL DEFAULT '', question TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS question_events (
+ turn_id TEXT PRIMARY KEY REFERENCES turns(id), round_id TEXT NOT NULL REFERENCES rounds(id),
+ card_id TEXT REFERENCES criterion_cards(id), context_json TEXT NOT NULL,
+ question_id TEXT, proposed_question_id TEXT, template_ok INTEGER,
+ outcome TEXT NOT NULL DEFAULT 'pending', model TEXT, raw_response TEXT,
+ is_practice INTEGER NOT NULL DEFAULT 0 CHECK(is_practice=0),
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS result_source_links (
+ result_id TEXT NOT NULL REFERENCES results(id), parent_id TEXT NOT NULL REFERENCES results(id),
+ is_practice INTEGER NOT NULL DEFAULT 0 CHECK(is_practice=0), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(result_id,parent_id), CHECK(result_id!=parent_id)
+);
+CREATE TABLE IF NOT EXISTS lineage_events (
+ id TEXT PRIMARY KEY, round_id TEXT NOT NULL REFERENCES rounds(id), result_id TEXT NOT NULL REFERENCES results(id),
+ parent_ids TEXT NOT NULL, is_practice INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS judgment_requests (
+ request_id TEXT NOT NULL, participant_id TEXT NOT NULL REFERENCES participants(id),
+ decision_id TEXT NOT NULL REFERENCES decisions(id), payload TEXT NOT NULL,
+ PRIMARY KEY(participant_id,request_id)
+);
