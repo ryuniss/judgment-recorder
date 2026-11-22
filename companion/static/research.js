@@ -2,8 +2,17 @@ let key='',data=null;const $=s=>document.querySelector(s);const esc=s=>String(s?
 async function request(path,body){const r=await fetch('/api/admin/'+path,{method:body?'POST':'GET',headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});const d=await r.json();if(!r.ok)throw Error(d.error);return d;}
 function download(d,name){const u=URL.createObjectURL(new Blob([JSON.stringify(d,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}
 async function run(fn){try{$('#error').textContent='';await fn();}catch(e){$('#error').textContent=e.message;}}
-$('#auth').addEventListener('submit',e=>{e.preventDefault();run(async()=>{key=$('#admin').value;data=await request('research');$('#admin').value='';$('#auth').hidden=true;$('#controls').hidden=false;$('#records').innerHTML=`<table><thead><tr><th>참여자 / 라운드</th><th>기록 구분</th><th>상태 / 기록</th></tr></thead><tbody>${data.rounds.map(r=>`<tr><td>${esc(r.participant_id)}<br>${r.is_practice?'연습':`라운드 ${r.number}`}</td><td>${r.is_practice?'연습 (is_practice = true)':'연구 기록'}</td><td>${esc(r.status)}<details><summary>원 기록 보기</summary><pre>${esc(JSON.stringify(Object.fromEntries(Object.entries(data).filter(([k])=>k!=='rounds').map(([k,v])=>[k,k==='criterion_cards'?v.filter(c=>c.participant_id===r.participant_id):['result_move_links','result_source_links'].includes(k)?v.filter(l=>data.results.some(res=>res.id===l.result_id&&res.round_id===r.id)):k==='move_decision_links'?v.filter(l=>data.moves.some(m=>m.id===l.move_id&&m.round_id===r.id)):v.filter(x=>x.round_id===r.id)])),null,2))}</pre></details></td></tr>`).join('')}</tbody></table>`;});});
+$('#auth').addEventListener('submit',e=>{e.preventDefault();run(async()=>{key=$('#admin').value;data=await request('research');$('#admin').value='';$('#auth').hidden=true;$('#controls').hidden=false;$('#records').innerHTML=`<table><thead><tr><th>참여자 / 라운드</th><th>기록 구분</th><th>상태 / 기록</th></tr></thead><tbody>${data.rounds.map(r=>`<tr><td>${esc(r.participant_id)}<br>${r.is_practice?'연습':`라운드 ${r.number}`}</td><td>${r.is_practice?'연습 (is_practice = true)':'연구 기록'}</td><td>${esc(r.status)}<details><summary>원 기록 보기</summary><pre>${esc(JSON.stringify(Object.fromEntries(Object.entries(data).filter(([k])=>k!=='rounds').map(([k,v])=>[k,roundRows(k,v,r)])),null,2))}</pre></details></td></tr>`).join('')}</tbody></table>`;});});
 $('#new-code').onclick=()=>run(async()=>{$('#code').textContent='새 참여 코드: '+(await request('participants',{})).code;});
 $('#export').onclick=()=>run(async()=>download(await request('export'),'companion-analysis.json'));
 $('#raw').onclick=()=>download(data,'companion-research-with-practice.json');
 $('#lock').onclick=()=>{key='';data=null;$('#records').textContent='';$('#code').textContent='';$('#controls').hidden=true;$('#auth').hidden=false;};
+
+function roundRows(k,v,r){
+ if(k==='criterion_cards')return v.filter(c=>c.participant_id===r.participant_id);
+ if(k==='criterion_changes')return v.filter(c=>data.turns.some(t=>t.id===c.source_turn_id&&t.round_id===r.id));
+ if(k==='criterion_codings'){const ids=new Set(roundRows('criterion_changes',data.criterion_changes||[],r).map(c=>c.id));return v.filter(c=>ids.has(c.criterion_id));}
+ if(['result_move_links','result_source_links','result_names'].includes(k))return v.filter(l=>data.results.some(res=>res.id===l.result_id&&res.round_id===r.id));
+ if(k==='move_decision_links')return v.filter(l=>data.moves.some(m=>m.id===l.move_id&&m.round_id===r.id));
+ return v.filter(x=>x.round_id===r.id);
+}

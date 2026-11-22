@@ -82,3 +82,39 @@ CREATE TABLE IF NOT EXISTS judgment_requests (
  decision_id TEXT NOT NULL REFERENCES decisions(id), payload TEXT NOT NULL,
  PRIMARY KEY(participant_id,request_id)
 );
+
+CREATE TABLE IF NOT EXISTS turn_context (
+ turn_id TEXT PRIMARY KEY REFERENCES turns(id), response_to TEXT REFERENCES turns(id), question_id TEXT
+);
+CREATE TABLE IF NOT EXISTS criterion_changes (
+ id TEXT PRIMARY KEY, participant_id TEXT NOT NULL REFERENCES participants(id),
+ base_card_id TEXT NOT NULL REFERENCES criterion_cards(id), confirmed_card_id TEXT REFERENCES criterion_cards(id),
+ source_turn_id TEXT REFERENCES turns(id), result_id TEXT REFERENCES results(id), decision_id TEXT REFERENCES decisions(id),
+ original_text TEXT NOT NULL, proposed_text TEXT NOT NULL, final_text TEXT,
+ author TEXT NOT NULL CHECK(author IN ('student','ai')), response_to TEXT REFERENCES turns(id), question_id TEXT,
+ status TEXT NOT NULL DEFAULT 'proposed' CHECK(status IN ('proposed','confirmed','rejected')),
+ student_type TEXT, target_rank INTEGER, is_practice INTEGER NOT NULL DEFAULT 0,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, confirmed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS criterion_codings (
+ id TEXT PRIMARY KEY, criterion_id TEXT NOT NULL REFERENCES criterion_changes(id),
+ code TEXT NOT NULL, note TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS result_names (
+ id TEXT PRIMARY KEY, result_id TEXT NOT NULL REFERENCES results(id), title TEXT NOT NULL,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS exploration_notes (
+ id TEXT PRIMARY KEY, participant_id TEXT NOT NULL REFERENCES participants(id),
+ kind TEXT NOT NULL CHECK(kind IN ('discovery','intent','action')),
+ text TEXT NOT NULL, original_text TEXT NOT NULL, source_turn_id TEXT REFERENCES turns(id),
+ result_id TEXT REFERENCES results(id), previous_id TEXT REFERENCES exploration_notes(id),
+ deleted INTEGER NOT NULL DEFAULT 0, is_practice INTEGER NOT NULL DEFAULT 0 CHECK(is_practice=0),
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS question_skips (
+ turn_id TEXT PRIMARY KEY REFERENCES turns(id), participant_id TEXT NOT NULL REFERENCES participants(id),
+ is_practice INTEGER NOT NULL DEFAULT 0 CHECK(is_practice=0), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

@@ -25,9 +25,9 @@ test('new participant: spotlight → practice → round 1 → confirmation → h
   w.eval(readFileSync('companion/static/app.js','utf8'));
   const q=s=>w.document.querySelector(s);const click=s=>{const el=q(s);assert.ok(el,s);assert.equal(el.disabled,false,s+' enabled');el.click();};const input=(s,value)=>{q(s).value=value;q(s).dispatchEvent(new w.Event('input',{bubbles:true}));};
   await wait(()=>q('#login'),'login');input('#code',code);q('#login').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
-  await wait(()=>q('.coach-card'),'first guide');assert.match(q('#coach-title').textContent,/결과를 올려요/);
-  click('[data-action="guide-next"]');assert.match(q('#coach-title').textContent,/크게 보여요/);
-  click('[data-action="guide-next"]');assert.ok(q('#attach-button'));assert.equal(q('.attachment'),null,'guide does not attach result');
+  await wait(()=>q('.coach-card'),'first guide');assert.match(q('#coach-title').textContent,/1순위 기준/);
+  click('[data-action="guide-next"]');assert.match(q('#coach-title').textContent,/어디서 이어졌는지/);
+  click('[data-action="guide-next"]');assert.ok(q('#guide-chat'));assert.equal(q('.attachment'),null,'guide does not attach result');
   click('[data-action="guide-next"]');click('[data-action="guide-next"]');assert.match(q('[data-action="guide-next"]').textContent,/연습 라운드 시작/);click('[data-action="guide-next"]');
   await wait(()=>!q('.coach-card'),'guide closed');assert.equal(q('#app').inert,false);
   click('#first-result');assert.ok(q('.viewer'));assert.equal(q('.attachment'),null,'viewing alone does not attach');click('[data-action="attach"]');assert.match(q('.attachment').textContent,/A를 보며/);

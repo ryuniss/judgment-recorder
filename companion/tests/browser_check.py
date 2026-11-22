@@ -23,7 +23,7 @@ def run():
     page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
     page.goto(base);page.locator('#code').fill(code);page.get_by_role('button',name='탐색 열기').click()
     expect(page.locator('.coach-card')).to_be_visible()
-    assert page.locator('.coach-card').evaluate('(e)=>getComputedStyle(e).backgroundColor')=='rgb(22, 22, 22)'
+    assert page.locator('.coach-card').evaluate('(e)=>getComputedStyle(e).backgroundColor')=='rgb(255, 255, 255)'
     expect(page.locator('.coach-kicker')).to_have_text('사용 안내')
     page.screenshot(path=str(OUTPUT/'coach1-desktop.png'),full_page=False)
     for i in range(4):page.locator('[data-action="guide-next"]').click()

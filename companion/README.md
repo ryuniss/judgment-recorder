@@ -128,3 +128,13 @@ QA_OUTPUT=work/browser-check python3 -m companion.tests.map_check
 `result_source_links`는 이미지 출처 다중 연결이며, `result_move_links`의 이전 시도 연결과 별개입니다. 먼저 올린 본인 실제 이미지에만 연결할 수 있어 순환·연습·타 참여자 연결을 막습니다. `lineage_events`는 출처 변경 이력입니다. 판단 칩은 기존 `decisions` 버전 체계로 즉시 저장하며 중복 요청은 `judgment_requests`로 방지합니다. DB 초기화 시 새 테이블과 카드 필드를 추가하며 기존 행을 지우지 않습니다.
 
 `QA_OUTPUT=work/browser-check python -m companion.tests.canvas_browser`로 실제 브라우저에서 다중 출처·저장 재시도·판단 변경·이미지별 대화·모바일 탭·기록 완료를 검증합니다. 시안의 예시 내용은 테스트용으로만 입력하고 앱에 기본 참여자 기록으로 넣지 않습니다.
+
+### 기준 정리 확인과 변화 타임라인
+
+최신 기준 디자인 원본은 `design/redesign-reference.html`입니다. 상단 ‘기준 이력’ 또는 정리본에서 처음 카드, 확인한 변경, 점선의 확인 전 제안을 볼 수 있습니다. 발언의 ‘기준으로 남기기’로 학생이 직접 제안하고, 실제 모델 모드에서는 원문 인용을 검증한 AI 제안도 같은 확인 과정을 거칩니다. 유형 다섯 개는 기본 선택이 없고, 확인 전 제안은 현재 기준과 Q6에 반영되지 않습니다.
+
+DB는 criterion_changes(제안·원문·학생 유형·확인), turn_context(학생이 직접 연결한 질문 응답), criterion_codings(독립 연구자 코딩), 카드의 extra_criteria(추가 기준)를 추가합니다. 기존 데이터는 보존합니다. 연구자 원 기록 JSON에 전체 기준 이력과 코딩을 포함합니다. 연구자 인증 후 POST `/api/admin/criteria/coding`에 criterion_id/code/note를 보내면 코딩을 새 행으로 남깁니다. 학생 화면에는 연구자 코딩을 표시하지 않습니다.
+
+`python -m companion.tests.criteria_browser`는 첨부 HTML의 06을 그대로 렌더링한 reference-06.png와 실제 앱의 latest-06/03 및 모바일 캡처를 만듭니다. 조명 이미지와 대화는 격리된 테스트 DB에만 넣는 예시이며, 실제 모델 의미 판단 검증은 아닙니다.
+
+탐색 상단의 **목록·기록 보기 / 캔버스 보기**로 02와 06 구성을 전환합니다. 모바일 기록 탭은 정리본이 아니라 같은 기록 패널을 엽니다. 학생이 직접 남긴 발견·의도·다음 행동은 `exploration_notes`에 수정/삭제 버전을 추가하며 원문을 보존합니다. Q6의 명시적 건너뛰기는 `question_skips`에 저장하며 판단을 변경하지 않습니다. 07 안내는 연구 데이터에 쓰지 않는 컵 예시이고, 이어지는 연습 수행은 기존 분리된 연습 라운드를 사용합니다.

@@ -15,6 +15,8 @@ Q6 템플릿: ''' + Q6 + '''
 출력은 JSON 객체: {"question_id":"Q6 또는 NONE","reply":"템플릿을 채운 질문 또는 짧은 수신 확인","evidence":"조건 판단에 참고한 학생 원문","rationale":"질문 선택 이유"}.
 evidence와 rationale은 연구자용이며 학생에게 보이지 않는다. NONE의 reply는 "''' + ACK + '''"로 쓴다.'''
 
+PROTOCOL += '\n추가 출력 필드 criterion_proposal: 현재 마지막 학생 발언에 기준의 변화나 구체화가 명시된 경우에만 {"text":"원문에 충실한 짧은 기준 정리", "quote":"마지막 학생 발언의 연속된 원문 그대로"}. 그렇지 않으면 null. 유형을 정하지 말고 조언/새 근거를 만들지 않는다. 제안은 확인 전이며 현재 priority를 변경하지 않는다.'
+
 def norm(s):
     return re.sub(r'''[\s"'“”‘’()（）「」『』\[\]]''', '', s)
 
@@ -57,4 +59,8 @@ def protocol_reply(context):
         if valid and norm(reply)==norm(canonical):
             result.update(reply=canonical,question_id='Q6',outcome='asked')
         else:result['outcome']='invalid_template_or_slot'
+    proposal=proposed.get('criterion_proposal')
+    last=next((t['content'] for t in reversed(context['turns']) if t['role']=='user'),'')
+    if isinstance(proposal,dict) and isinstance(proposal.get('text'),str) and 0<len(proposal['text'].strip())<=2000 and isinstance(proposal.get('quote'),str) and proposal['quote'].strip() and proposal['quote'] in last:
+        result['criterion_proposal']={'text':proposal['text'].strip(),'quote':proposal['quote']}
     return result
