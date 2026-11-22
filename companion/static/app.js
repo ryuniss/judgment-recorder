@@ -360,7 +360,7 @@ async function act(action,node) {
     case 'download-history':downloadJSON(historyData,'companion-history.json');break;
     case 'close-modal':modal.close();break;
     case 'context':{const r=current.results.find(x=>x.is_context);openModal(`<div class="bar"><h2>생성 화면</h2>${button('close-modal','닫기')}</div>${pic(r)}<p class="muted">결과를 만든 맥락 자료예요.</p>`);break;}
-    case 'guide':if(state.practice_completed&&!current?.is_practice&&current?.status!=='checkpoint'){openModal(`<h1>탐색 캔버스 사용하기</h1><p>이미지를 올리고 출처를 고르면 선이 이어져요. 이미지를 누르면 오른쪽에서 그 이미지의 대화를 볼 수 있어요.</p><p>선택·보류·제외·아직 모르겠어요는 직접 고릅니다. 발언과 판단은 따로 저장돼요.</p>${button('close-modal','닫기')}`);break;}if(current?.status==='checkpoint'&&draft.ui.step!==1)checkpointStage(1);startGuide(current?.status==='checkpoint');break;
+    case 'guide':if(modal.open)modal.close();if(current?.status==='checkpoint'&&draft.ui.step!==1)checkpointStage(1);startGuide(current?.status==='checkpoint');break;
     case 'guide-next':if(guide.checkpoint||guide.step===4)await closeGuide();else{guide.step++;drawGuide();}break;
     case 'guide-close':await closeGuide();break;
     case 'logout':await api('/logout',{});state=null;current=null;attached=null;responseTo=null;canvasScreen='explore';if(modal.open)modal.close();renderLogin();break;
@@ -377,7 +377,6 @@ const coachSteps=[
 
 function startGuide(cp=false) {
   if(guide)return;
-  if(!current){toast('결과를 올려 라운드를 시작하면 사용 안내를 볼 수 있어요.');return;}
   guideReturnFocus=document.activeElement;guideReturnView=view;guide={step:0,checkpoint:cp};drawGuide();
 }
 function drawGuide() {
@@ -386,7 +385,7 @@ function drawGuide() {
   const info=guide.checkpoint?['#checkpoint-choices','결과마다 내 판단을 골라요','네 가지 중 하나를 골라요. 위 칸에는 대화에서 내가 한 말이 그대로 들어 있고, 고칠 수 있어요. 다 고르면 다음에 해볼 것을 적어요.']:coachSteps[guide.step];
   let target=$(info[0]);if(!target)target=$('#stage');
   target.scrollIntoView({block:'center',behavior:'instant'});
-  $('#coach-root').innerHTML=`<div class="coach-shade" data-shade="top"></div><div class="coach-shade" data-shade="left"></div><div class="coach-shade" data-shade="right"></div><div class="coach-shade" data-shade="bottom"></div><div class="coach-ring"></div><section class="coach-card" role="dialog" aria-modal="true" aria-labelledby="coach-title"><div class="coach-dots"><b class="coach-kicker">사용 안내</b><span class="coach-step-dots" aria-label="${guide.checkpoint?'확인 화면 안내':`안내 ${guide.step+1} / 5`}">${Array.from({length:guide.checkpoint?1:5},(_,i)=>`<i class="${i===guide.step?'current':''}"></i>`).join('')}</span></div><h2 id="coach-title">${info[1]}</h2><p>${info[2]}</p><div class="actions">${button('guide-close','안내 건너뛰기','ghost')}${button('guide-next',guide.checkpoint?'확인했어요':guide.step===4?(current.is_practice?'연습 라운드 시작':'안내 마치기'):'다음','primary')}</div></section>`;
+  $('#coach-root').innerHTML=`<div class="coach-shade" data-shade="top"></div><div class="coach-shade" data-shade="left"></div><div class="coach-shade" data-shade="right"></div><div class="coach-shade" data-shade="bottom"></div><div class="coach-ring"></div><section class="coach-card" role="dialog" aria-modal="true" aria-labelledby="coach-title"><div class="coach-dots"><b class="coach-kicker">사용 안내</b><span class="coach-step-dots" aria-label="${guide.checkpoint?'확인 화면 안내':`안내 ${guide.step+1} / 5`}">${Array.from({length:guide.checkpoint?1:5},(_,i)=>`<i class="${i===guide.step?'current':''}"></i>`).join('')}</span></div><h2 id="coach-title">${info[1]}</h2><p>${info[2]}</p><div class="actions">${button('guide-close','안내 건너뛰기','ghost')}${button('guide-next',guide.checkpoint?'확인했어요':guide.step===4?(current?.is_practice?'연습 라운드 시작':'안내 마치기'):'다음','primary')}</div></section>`;
   app.inert=true;placeGuide();$('[data-action="guide-next"]')?.focus();
 }
 function placeGuide() {
@@ -554,7 +553,7 @@ async function recordsAction(action,node){
 document.addEventListener('submit',async e=>{if(e.target.id!=='note-editor')return;e.preventDefault();const f=e.target,b=f.querySelector('[type=submit]');b.disabled=true;try{await api('/notes',{kind:f.elements.kind.value,text:f.elements.text.value,previous_id:f.dataset.id||null,source_turn_id:f.dataset.source||null});await refresh();modal.close();render();toast('기록을 저장했어요.');}catch(err){$('#note-error').textContent=err.message;b.disabled=false;}});
 
 function renderGuideExample(){
- const cups=results().slice(0,3),step=guide.step;
+ const cups=[1,2,3].map(n=>({image:`/assets/cup-${n}.jpg`})),step=guide.step;
  app.innerHTML=`<header class="design-header"><b>탐색 기록</b><span>사용 안내 · 연습용 예시</span></header><main class="guide-example"><section id="guide-criterion" class="card-strip"><b>1순위 기준</b> 손에 쥐기 편할 것 <small>(연습용 예시)</small></section><div class="guide-demo-grid"><section class="guide-demo-canvas"><div id="guide-upload"><b>이미지 3 · 연결 2</b><button>＋ 이미지 올리기</button></div><svg viewBox="0 0 600 400" aria-hidden="true"><path d="M160 100 C300 100 280 210 380 210 M160 320 C300 320 280 210 380 210" fill="none" stroke="#111" stroke-width="2"/></svg>${cups.map((r,i)=>`<article class="guide-cup cup-${i}"><img src="${esc(r.image)}" alt="컵 ${ordinalName(i)}"><b>컵 ${ordinalName(i)}</b>${stateChip(['HOLD',null,'SELECT'][i])}</article>`).join('')}${step===1?'<div class="guide-source"><b>어디서 이어졌나요?</b><p>□ 컵 A　□ 컵 B　　새로 시작</p><small>여러 이미지를 고를 수 있어요.</small></div>':''}</section><section id="guide-chat" class="guide-demo-chat"><b>컵 C</b><div id="guide-judgment">${Object.entries(names).map(([k,v])=>`<span class="judgment-chip chip-${k}">${v}</span>`).join('')}</div><p class="guide-ai">보이는 대로 말해 보세요.</p><p class="guide-student">손잡이가 커서 잡기 편해 보여요.</p><section id="guide-confirm" class="criterion-review"><small>1순위 기준 · 정리 제안 · 확인 전</small><h3>손에 쥐기 편하고, 뜨거워도 잡을 수 있게</h3><p>확인 전에는 지금 기준이 바뀌지 않아요.</p><div class="actions"><button class="primary">맞아요</button><button>고칠게요</button></div></section></section></div><p>안내용 예시예요. 여기서 보이는 말과 판단은 연구 기록에 저장되지 않아요.</p></main>`;
 }
 
