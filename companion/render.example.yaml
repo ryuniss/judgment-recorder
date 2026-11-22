@@ -1,0 +1,22 @@
+# Reference only. Do not create a second service if retaining companion-preview.onrender.com.
+# A Render persistent disk requires an eligible paid service; review existing service settings first.
+services:
+  - type: web
+    name: companion-preview
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeployTrigger: off
+    envVars:
+      - key: DATABASE_PATH
+        value: /var/data/companion.sqlite3
+      - key: COOKIE_SECURE
+        value: "1"
+      - key: AI_MODE
+        value: demo
+      - key: ADMIN_KEY
+        generateValue: true
+    disk:
+      name: companion-data
+      mountPath: /var/data
+      sizeGB: 1

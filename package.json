@@ -1,0 +1,12 @@
+{
+  "name": "companion-v2",
+  "private": true,
+  "engines": {"node": ">=22"},
+  "scripts": {
+    "start": "python3 -m companion.server",
+    "check": "node --check companion/static/app.js && node --check companion/static/research.js && python3 -m compileall -q companion",
+    "test": "python3 -m unittest discover -s companion/tests -v && node --test companion/tests/ui.test.mjs",
+    "build": "npm run check"
+  },
+  "devDependencies": {"jsdom": "^29.0.1"}
+}
