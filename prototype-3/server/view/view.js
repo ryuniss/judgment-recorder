@@ -65,7 +65,7 @@ function layout() {
 
 // ---------- 화면 ----------
 function render() {
-  if (!S?.session) return renderStart();
+  if (!S?.session || mode === "start") return renderStart();
   const { pos, W, H } = layout();
   const cur = S.current_criterion, prop = S.proposal, n = S.nodes.length;
   const focus = S.focus_node_id;
@@ -73,6 +73,7 @@ function render() {
   <div class="top">
     <div class="crit"><span class="k">1순위 기준</span><b>${esc(cur?.text ?? "-")}</b>
       <button class="sec" data-act="crit">기준 변화 기록</button>
+      <button class="ghost" data-act="new">새 탐색 시작</button>
       ${avail.includes("fullscreen") && hostMode !== "fullscreen" ? `<button class="sec" data-act="full">크게 보기</button>` : ""}</div>
     ${prop ? `<div class="prop"><span class="tag">정리 제안 · 확인 전</span><span class="t">${esc(prop.text)}</span>
       <button class="sec" data-act="prop-ok">확인하고 기록</button><button class="ghost" data-act="prop-no">넘기기</button></div>` : ""}
@@ -135,12 +136,14 @@ function renderStart() {
   <label class="f">무엇을 디자인하려고 하나요? (기획 의도)<textarea id="intent" rows="3"></textarea></label>
   <label class="f">1순위 기준과 그 이유<textarea id="crit" rows="3" placeholder="예: 눈부시지 않을 것. 밤늦게 오래 쓰는 사람이니까"></textarea></label>
   <button class="primary" id="go" disabled>저장하고 캔버스 열기</button>
+  ${S?.session ? `<p class="mut">지금 탐색(1순위 기준: ${esc(S.current_criterion?.text ?? "-")})은 지워지지 않고 그대로 남아요. <button class="ghost" id="back">지난 탐색 이어가기</button></p>` : ""}
   <p class="note">여기에는 내가 올린 이미지와 내가 고른 출처·판단·기준만 저장돼요. 대화는 평소처럼 ChatGPT·Claude 창에서 해요.</p></div>`;
   const go = root.querySelector("#go"), i = root.querySelector("#intent"), c = root.querySelector("#crit");
   i.oninput = c.oninput = () => (go.disabled = !(i.value.trim() && c.value.trim()));
+  const back = root.querySelector("#back"); if (back) back.onclick = () => { mode = "canvas"; render(); };
   go.onclick = async () => {
     go.disabled = true;
-    try { S = await call("app_save_session", { intent: i.value, criterion: c.value }); }
+    try { S = await call("app_save_session", { intent: i.value, criterion: c.value }); mode = "canvas"; sel = null; }
     catch (e) { go.disabled = false; return toast(e.message); }
     await tellModel(`학생이 기획 의도와 1순위 기준을 직접 적었습니다. 1순위 기준: "${c.value}". 캔버스에 이미지를 올리면 알파벳(A, B…)이 붙습니다.`);
     render();
@@ -159,6 +162,7 @@ function bind() {
   act("fit", () => { fit(); call("app_event", { type: "zoom_fit" }).catch(() => {}); });
   act("full", async () => { try { const r = await app.requestDisplayMode({ mode: "fullscreen" }); hostMode = r?.mode || hostMode; render(); } catch {} });
   act("crit", () => openCriterion());
+  act("new", () => { mode = "start"; render(); });
   act("prop-ok", () => openCriterion(S.proposal));
   act("prop-no", async () => { S = await call("app_save_criterion", { proposal_id: S.proposal.id, dismiss: true }); toast("정리 제안을 넘겼어요"); render(); });
   act("talk", async () => {
@@ -324,7 +328,7 @@ function openCriterion(proposal) {
 
 // ---------- 시작 ----------
 async function refresh() {
-  if (demo || !app || !S?.session || document.visibilityState !== "visible" || root.querySelector(".scrim")) return;
+  if (demo || !app || !S?.session || mode === "start" || document.visibilityState !== "visible" || root.querySelector(".scrim")) return;
   try { const n = await call("app_get_state"); const before = JSON.stringify([S.proposal?.id, S.nodes.length, S.focus_node_id]);
     S = n; if (before !== JSON.stringify([S.proposal?.id, S.nodes.length, S.focus_node_id])) render(); } catch {}
 }
@@ -332,11 +336,12 @@ async function refresh() {
 if (demo) {
   S = DEMO(); q6 = params.get("q6") || "";
   if (params.get("mode") === "start") S.session = null;
+  if (params.get("mode") === "new") mode = "start";
   if (params.get("sel")) sel = S.nodes.find((n) => n.letter === params.get("sel"))?.id ?? null;
   render();
 } else {
   app = new App({ name: "판단 기록", version: "0.2.0" }, { availableDisplayModes: ["inline", "fullscreen"] });
-  app.ontoolresult = (p) => { const sc = p?.structuredContent; if (sc && "nodes" in sc) { S = sc; render(); } };
+  app.ontoolresult = (p) => { const sc = p?.structuredContent; if (sc && "nodes" in sc) { S = sc; mode = sc.mode || "canvas"; render(); } };
   app.onhostcontextchanged = (ctx) => { if (ctx?.displayMode) hostMode = ctx.displayMode; if (ctx?.availableDisplayModes) avail = ctx.availableDisplayModes; if (S) render(); };
   app.connect().then(async () => {
     const ctx = app.getHostContext?.(); hostMode = ctx?.displayMode || hostMode; avail = ctx?.availableDisplayModes || [];
@@ -367,7 +372,7 @@ function DEMO() {
 }
 function demoCall(name, a) {
   const T = new Date().toISOString();
-  if (name === "app_save_session") { S = DEMO(); S.nodes = []; S.proposal = null; S.session = { intent: a.intent }; S.criteria = [{ id: "c1", change_type: "처음", status: "confirmed", text: a.criterion, created_at: T }]; S.current_criterion = { text: a.criterion }; }
+  if (name === "app_save_session") { S = DEMO(); S.focus_node_id = null; S.nodes = []; S.proposal = null; S.session = { intent: a.intent }; S.criteria = [{ id: "c1", change_type: "처음", status: "confirmed", text: a.criterion, created_at: T }]; S.current_criterion = { text: a.criterion }; }
   if (name === "app_add_node") { const id = "n" + (S.nodes.length + 1); S.nodes.push({ id, letter: nextLetter(), name: a.name || null, parents: a.parents, origin: a.origin, image_url: a.image, created_at: T, judgment: null, history: [] }); S.focus_node_id = id; }
   if (name === "app_set_judgment") { const n = nodeById(a.node_id), j = { label: a.label, reason: a.reason?.trim() || null, created_at: T }; n.judgment = j; n.history.push(j); }
   if (name === "app_save_criterion") {

@@ -72,6 +72,9 @@ function summaryText(s) {
   return lines.join("\n");
 }
 
+// 아직 기준이 없으면 대화 AI에게 매번 되돌려 알린다
+const NO_SESSION = (code) => (currentSession(code) ? "" :
+  "\n[주의] 아직 1순위 기준이 없습니다. 다음 응답에서 이미지나 아이디어를 만들지 말고 open_canvas를 불러 학생이 기준부터 적게 하세요.");
 const logEvent = (code, sid, type, payload) =>
   db.prepare("INSERT INTO events(id,code,session_id,type,payload,created_at) VALUES(?,?,?,?,?,?)").run(id(), code, sid ?? null, type, JSON.stringify(payload ?? {}), now());
 
@@ -87,6 +90,8 @@ function buildViewHtml() {
 }
 
 const RULES = `판단 기록 캔버스 규칙:
+- 대화가 시작되면 다른 도움보다 먼저 open_canvas를 부른다. 학생이 새 주제로 시작한다고 하면 new_exploration=true로 부른다.
+- 학생이 캔버스 시작 화면에서 기획 의도와 1순위 기준을 직접 적기 전에는 이미지를 만들거나 아이디어를 제안하지 않는다. 기준을 대신 적어 주거나 예시 기준을 제시하지도 않는다. "캔버스에서 기준부터 적어 주세요"라고만 안내한다.
 - 이미지의 판단(선택·보류·제외·아직 모르겠어요), 이유, 1순위 기준은 학생이 캔버스에서 직접 정한다. 대신 정하거나, 어느 쪽이 낫다고 평가하거나, 판단을 바꾸라고 권하지 않는다.
 - 학생이 이미지에 대해 말하면 알파벳(A, B, C…)으로 가리킨다.
 - 기준이 구체화되거나 바뀐 것처럼 들려도 단정하지 않는다. 필요하면 propose_criterion으로 '정리 제안'만 남기고, 학생이 캔버스에서 확인하게 한다.
@@ -111,19 +116,23 @@ function mcpFor(code) {
   registerAppTool(server, "open_canvas", {
     title: "판단 기록 캔버스 열기",
     description: `학생이 아이데이션을 시작하거나 이어갈 때, 또는 캔버스·지금까지의 이미지를 보고 싶다고 할 때 부른다. 처음이면 학생이 기획 의도와 1순위 기준을 직접 적는 화면이 먼저 열린다.\n${RULES}`,
-    inputSchema: {},
+    inputSchema: { new_exploration: z.boolean().optional().describe("학생이 새 주제·새 과제로 처음부터 시작한다고 말했을 때만 true") },
     _meta: { ui: { resourceUri: VIEW_URI }, "openai/outputTemplate": VIEW_URI },
-  }, async () => {
+  }, async ({ new_exploration } = {}) => {
     const s = state(code);
-    logEvent(code, s.session?.id, "open_canvas", {});
-    return { content: [{ type: "text", text: `캔버스를 열었습니다.\n${summaryText(s)}` }], structuredContent: { ...s, mode: s.session ? "canvas" : "start" } };
+    const start = !s.session || !!new_exploration;
+    logEvent(code, s.session?.id, "open_canvas", { new_exploration: !!new_exploration });
+    const text = start
+      ? "캔버스 시작 화면을 열었습니다. 학생이 기획 의도와 1순위 기준을 직접 적을 때까지 이미지 생성이나 아이디어 제안을 하지 말고 기다리세요. 기준 예시도 주지 마세요."
+      : `캔버스를 열었습니다(지난 탐색을 이어서).\n${summaryText(s)}`;
+    return { content: [{ type: "text", text }], structuredContent: { ...s, mode: start ? "start" : "canvas" } };
   });
 
   server.registerTool("get_canvas_state", {
     title: "캔버스 상태 보기",
     description: "학생이 캔버스에 올린 이미지(A, B, C…), 출처 연결, 학생이 정한 판단과 1순위 기준을 읽는다. 학생이 이미지를 알파벳으로 말할 때 무엇인지 확인하려고 쓴다. 읽기만 한다.",
     inputSchema: {},
-  }, async () => ({ content: [{ type: "text", text: summaryText(state(code)) }] }));
+  }, async () => ({ content: [{ type: "text", text: summaryText(state(code)) + NO_SESSION(code) }] }));
 
   server.registerTool("record_turn", {
     title: "대화 기록",
@@ -133,7 +142,7 @@ function mcpFor(code) {
     const s = currentSession(code);
     db.prepare("INSERT INTO relayed_turns(id,code,session_id,user_text,assistant_text,focus_node,created_at) VALUES(?,?,?,?,?,?,?)")
       .run(id(), code, s?.id ?? null, user_text, assistant_text, focus ?? null, now());
-    return { content: [{ type: "text", text: "기록했습니다. 학생에게 따로 알리지 않아도 됩니다." }] };
+    return { content: [{ type: "text", text: "기록했습니다. 학생에게 따로 알리지 않아도 됩니다." + NO_SESSION(code) }] };
   });
 
   server.registerTool("propose_criterion", {
