@@ -21,3 +21,20 @@ CREATE TABLE IF NOT EXISTS review_triggers (id TEXT PRIMARY KEY, code TEXT NOT N
 CREATE TABLE IF NOT EXISTS identities (
   provider TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, name TEXT, code TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL,
   PRIMARY KEY (provider, subject));
+-- ===== 캔버스(06) =====
+-- 이미지 노드. parents는 학생이 고른 출처 노드(JSON 배열). 지우지 않는다.
+CREATE TABLE IF NOT EXISTS nodes (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, letter TEXT NOT NULL, name TEXT, image_id TEXT,
+  parents TEXT NOT NULL DEFAULT '[]', origin TEXT, author TEXT NOT NULL, created_at TEXT NOT NULL);
+-- 노드 판단 이력. 바꿔도 이전 기록은 남는다. 최신 행이 현재 판단.
+CREATE TABLE IF NOT EXISTS node_judgments (
+  id TEXT PRIMARY KEY, node_id TEXT NOT NULL, session_id TEXT NOT NULL,
+  label TEXT NOT NULL CHECK(label IN ('선택','보류','제외','아직 모르겠어요')),
+  reason TEXT, author TEXT NOT NULL, created_at TEXT NOT NULL);
+-- 대화 AI가 record_turn으로 넘긴 대화(AI 전달본). 확장 프로그램 원문(raw)과 구분한다.
+CREATE TABLE IF NOT EXISTS relayed_turns (
+  id TEXT PRIMARY KEY, code TEXT NOT NULL, session_id TEXT, user_text TEXT, assistant_text TEXT,
+  focus_node TEXT, created_at TEXT NOT NULL);
+-- 화면 조작 기록(초점 이동, 올리기 취소 등). 분석용.
+CREATE TABLE IF NOT EXISTS events (
+  id TEXT PRIMARY KEY, code TEXT NOT NULL, session_id TEXT, type TEXT NOT NULL, payload TEXT, created_at TEXT NOT NULL);

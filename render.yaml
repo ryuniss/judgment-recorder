@@ -21,6 +21,8 @@ services:
         sync: false
       - key: GOOGLE_CLIENT_SECRET
         sync: false
+      - key: Q6_TEXT  # 2차 DBR 원래 Q6 문장. 비우면 판단 뒤 질문 지시를 보내지 않는다
+        sync: false
     # 무료 플랜: DB는 서버 폴더의 data.sqlite3에 생기고, 재시작·재배포 때 비워진다(로그인 확인용).
     # 기록을 남기려면 유료 플랜으로 바꾸고 아래 두 블록을 함께 켠다.
     #   envVars에 추가:
