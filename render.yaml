@@ -21,9 +21,11 @@ services:
         sync: false
       - key: GOOGLE_CLIENT_SECRET
         sync: false
-      - key: DATABASE_PATH
-        value: /var/data/p3.sqlite3
-    # 기록을 남기려면 유료 인스턴스에 디스크를 붙인다(무료 플랜은 재시작 시 초기화).
+    # 무료 플랜: DB는 서버 폴더의 data.sqlite3에 생기고, 재시작·재배포 때 비워진다(로그인 확인용).
+    # 기록을 남기려면 유료 플랜으로 바꾸고 아래 두 블록을 함께 켠다.
+    #   envVars에 추가:
+    #   - key: DATABASE_PATH
+    #     value: /var/data/p3.sqlite3
     # disk:
     #   name: data
     #   mountPath: /var/data

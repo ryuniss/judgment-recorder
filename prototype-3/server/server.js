@@ -17,7 +17,9 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8787);
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, "");
 const ADMIN_KEY = process.env.ADMIN_KEY || "";
-const db = new DatabaseSync(process.env.DATABASE_PATH || path.join(DIR, "data.sqlite3"));
+const DB_PATH = process.env.DATABASE_PATH || path.join(DIR, "data.sqlite3");
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true }); // 폴더가 없으면 만든다(권한이 없으면 여기서 분명한 오류로 멈춤)
+const db = new DatabaseSync(DB_PATH);
 db.exec("PRAGMA journal_mode = WAL");
 db.exec(fs.readFileSync(path.join(DIR, "schema.sql"), "utf8"));
 
