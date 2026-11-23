@@ -94,7 +94,8 @@ const RULES = `판단 기록 캔버스 규칙:
 - 학생이 캔버스 시작 화면에서 기획 의도와 1순위 기준을 직접 적기 전에는 이미지를 만들거나 아이디어를 제안하지 않는다. 기준을 대신 적어 주거나 예시 기준을 제시하지도 않는다. "캔버스에서 기준부터 적어 주세요"라고만 안내한다.
 - 이미지의 판단(선택·보류·제외·아직 모르겠어요), 이유, 1순위 기준은 학생이 캔버스에서 직접 정한다. 대신 정하거나, 어느 쪽이 낫다고 평가하거나, 판단을 바꾸라고 권하지 않는다.
 - 학생이 이미지에 대해 말하면 알파벳(A, B, C…)으로 가리킨다.
-- 기준이 구체화되거나 바뀐 것처럼 들려도 단정하지 않는다. 필요하면 propose_criterion으로 '정리 제안'만 남기고, 학생이 캔버스에서 확인하게 한다.
+- 학생이 기준을 바꾸고 싶다고 직접 말하면 open_criterion을 부른다.
+- 학생이 그렇게 말하지 않았는데 기준이 구체화되거나 바뀐 것처럼 들려도 단정하지 않는다. 필요하면 propose_criterion으로 '정리 제안'만 남기고, 학생이 캔버스에서 확인하게 한다.
 - 매 응답을 다 쓴 뒤 마지막에 record_turn을 한 번 부른다. 학생 메시지와 방금 쓴 답을 줄이거나 고치지 말고 그대로 넣는다.`;
 
 function mcpFor(code) {
@@ -126,6 +127,19 @@ function mcpFor(code) {
       ? "캔버스 시작 화면을 열었습니다. 학생이 기획 의도와 1순위 기준을 직접 적을 때까지 이미지 생성이나 아이디어 제안을 하지 말고 기다리세요. 기준 예시도 주지 마세요."
       : `캔버스를 열었습니다(지난 탐색을 이어서).\n${summaryText(s)}`;
     return { content: [{ type: "text", text }], structuredContent: { ...s, mode: start ? "start" : "canvas" } };
+  });
+
+  registerAppTool(server, "open_criterion", {
+    title: "기준 기록 열기",
+    description: "학생이 1순위 기준을 바꾸고 싶다, 고치고 싶다, 다시 정하고 싶다고 직접 말했을 때 부른다. 캔버스와 함께 기준 기록 창이 열리고, 학생이 변화 종류와 새 기준을 직접 적는다. student_words에는 학생이 한 말을 그대로 넣는다. 새 기준 문장을 대신 써 주거나 변화 종류를 정하지 않는다. (학생이 바꾸겠다고 하지 않았는데 기준이 달라진 것 같다고 AI가 느낄 때는 이 도구가 아니라 propose_criterion을 쓴다.)",
+    inputSchema: { student_words: z.string().max(2000).optional().describe("학생이 기준을 바꾸고 싶다며 한 말, 그대로") },
+    _meta: { ui: { resourceUri: VIEW_URI }, "openai/outputTemplate": VIEW_URI },
+  }, async ({ student_words } = {}) => {
+    const s = state(code);
+    logEvent(code, s.session?.id, "open_criterion", { student_words: student_words ?? null });
+    if (!s.session) return { content: [{ type: "text", text: "아직 처음 기준이 없어 시작 화면을 열었습니다. 학생이 직접 적을 때까지 기다리세요." }], structuredContent: { ...s, mode: "start" } };
+    return { content: [{ type: "text", text: "기준 기록 창을 열었습니다. 학생이 변화 종류와 새 기준을 직접 적을 때까지 기준을 대신 정하거나 제안하지 마세요." }],
+      structuredContent: { ...s, mode: "criterion", student_words: student_words ?? null } };
   });
 
   server.registerTool("get_canvas_state", {

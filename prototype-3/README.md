@@ -30,6 +30,7 @@ ChatGPT·Claude 대화창 (= 06의 챗봇)              서버 (server/)
 | `open_canvas` | 대화 AI | 캔버스를 연다. 처음이면 학생이 기획 의도·1순위 기준을 직접 적는 화면부터 |
 | `get_canvas_state` | 대화 AI | A, B, C… 이미지·출처·학생 판단·기준을 읽기만 한다 |
 | `record_turn` | 대화 AI | 매 응답 끝에 학생 메시지와 자기 답을 그대로 넘긴다 → `relayed_turns` (AI 전달본) |
+| `open_criterion` | 대화 AI | 학생이 "기준 바꾸고 싶어"라고 직접 말하면 캔버스와 기준 기록 창을 함께 연다. 학생이 한 말을 창 위에 보여 주고, 변화 종류·새 기준은 학생이 적는다 |
 | `propose_criterion` | 대화 AI | 기준이 바뀐 것처럼 들릴 때 '정리 제안'만 남긴다(`status=proposed`, `author=ai`). 학생이 확인해야 기준이 된다 |
 | `app_*` | 화면만(`visibility: ["app"]`) | 올리기, 판단, 기준 기록, 초점 이동. 대화 AI는 부를 수 없다 |
 

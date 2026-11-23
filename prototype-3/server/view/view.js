@@ -295,13 +295,14 @@ async function openSource(file, preset, origin, dropOn = false) {
 const nextLetter = () => { let n = S.nodes.length, s = ""; n += 1; while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); } return s; };
 
 // ---------- 기준 ----------
-function openCriterion(proposal) {
+function openCriterion(proposal, words) {
   let change = null;
   const scrim = document.createElement("div"); scrim.className = "scrim";
   scrim.innerHTML = `<div class="sheet" role="dialog" aria-label="기준 변화 기록">
     <h2>1순위 기준 기록</h2>
     <ol class="tl">${S.criteria.filter((c) => c.status !== "proposed" && c.status !== "superseded").map((c) =>
       `<li><span class="tg">${esc(c.status === "dismissed" ? "넘긴 제안" : c.change_type)}</span><span class="mut">${esc(c.created_at.slice(5, 16).replace("T", " "))}</span><p>${esc(c.text)}</p></li>`).join("")}</ol>
+    ${words ? `<p class="note">대화에서 내가 한 말: "${esc(words)}"</p>` : ""}
     ${proposal ? `<p class="note">정리 제안(AI 작성, 확인 전): ${esc(proposal.text)}<br>그대로 쓰거나 내 말로 고쳐서 기록하세요.</p>` : ""}
     <div><p style="font-weight:700;font-size:14px;margin-bottom:6px">어떤 변화인가요?</p>
       <div class="chips" role="group" aria-label="변화 종류">${CHANGES.map((c) => `<button type="button" aria-pressed="false" data-ch="${c}">${c}</button>`).join("")}</div></div>
@@ -337,11 +338,16 @@ if (demo) {
   S = DEMO(); q6 = params.get("q6") || "";
   if (params.get("mode") === "start") S.session = null;
   if (params.get("mode") === "new") mode = "start";
+  if (params.get("mode") === "criterion") setTimeout(() => openCriterion(null, params.get("words") || "광원이 보이는 게 문제가 아니라 책상 전체가 고르게 밝은 게 더 중요한 것 같아"));
   if (params.get("sel")) sel = S.nodes.find((n) => n.letter === params.get("sel"))?.id ?? null;
   render();
 } else {
   app = new App({ name: "판단 기록", version: "0.2.0" }, { availableDisplayModes: ["inline", "fullscreen"] });
-  app.ontoolresult = (p) => { const sc = p?.structuredContent; if (sc && "nodes" in sc) { S = sc; mode = sc.mode || "canvas"; render(); } };
+  app.ontoolresult = (p) => {
+    const sc = p?.structuredContent; if (!sc || !("nodes" in sc)) return;
+    S = sc; mode = sc.mode === "start" ? "start" : "canvas"; render();
+    if (sc.mode === "criterion") openCriterion(null, sc.student_words);
+  };
   app.onhostcontextchanged = (ctx) => { if (ctx?.displayMode) hostMode = ctx.displayMode; if (ctx?.availableDisplayModes) avail = ctx.availableDisplayModes; if (S) render(); };
   app.connect().then(async () => {
     const ctx = app.getHostContext?.(); hostMode = ctx?.displayMode || hostMode; avail = ctx?.availableDisplayModes || [];
