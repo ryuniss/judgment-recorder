@@ -1,0 +1,22 @@
+{
+  "name": "judgment-recorder-3",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "start": "node server.js",
+    "create-code": "node server.js --create-code"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "express": "^4.22.3",
+    "zod": "^3.25.76"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  }
+}

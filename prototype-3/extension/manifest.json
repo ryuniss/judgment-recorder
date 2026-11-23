@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "판단 기록 수집기 (3차 시제품)",
+  "version": "0.1.0",
+  "description": "켜 둔 동안 ChatGPT·Claude 대화의 원문과 생성 이미지를 연구 서버로 보냅니다.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://*.oaiusercontent.com/*",
+    "https://*.openai.com/*",
+    "https://*.onrender.com/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "판단 기록 수집기"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.onrender.com/join/*",
+        "http://localhost/join/*"
+      ],
+      "js": [
+        "join.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
