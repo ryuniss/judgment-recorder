@@ -3,11 +3,14 @@ services:
   - type: web
     name: judgment-recorder-3
     runtime: node
+    plan: free  # 로그인 확인용. 기록을 남길 때는 유료 플랜 + 아래 disk
     rootDir: prototype-3/server
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /health
     envVars:
+      - key: NODE_VERSION
+        value: "22.13.0"
       - key: PUBLIC_URL
         sync: false
       - key: ADMIN_KEY

@@ -63,7 +63,7 @@ open http://localhost:8787/view-preview?demo=1&mode=review   # 가짜 데이터�
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google 로그인 (아래 설정 참고) |
 | `DATABASE_PATH` | SQLite 파일 위치. **재시작해도 지워지지 않는 디스크**에 둘 것 |
 
-- **Render:** 이 브랜치의 루트에 `render.yaml`이 있다. Render에서 New → Blueprint → 저장소·브랜치(`prototype-3`) 선택. 또는 아래처럼 Web Service를 직접 만든다.
+- **Render:** 이 브랜치의 루트에 `render.yaml`이 있다(무료 플랜, Node 22.13 고정). Render에서 New → Blueprint → 저장소·브랜치(`prototype-3`) 선택. 또는 아래처럼 Web Service를 직접 만든다.
 - **Docker가 되는 곳(Railway, Fly.io, 사내 서버 등):** `server/Dockerfile` 사용. 데이터는 `/data`에 쌓이므로 그 경로에 볼륨을 연결한다.
   ```sh
   cd server && docker build -t jr3 . && docker run -p 8787:8787 -v jr3data:/data -e PUBLIC_URL=https://… -e ADMIN_KEY=… -e SESSION_SECRET=… jr3
@@ -74,7 +74,7 @@ open http://localhost:8787/view-preview?demo=1&mode=review   # 가짜 데이터�
 
 Claude·ChatGPT가 MCP 서버에 붙으려면 **HTTPS 공개 주소**가 필요하다.
 
-1. 새 Web Service, 루트 `server/`, Build `npm install`, Start `npm start`
+1. 새 Web Service, Root Directory `prototype-3/server`, Build `npm install`, Start `npm start`
 2. 환경 변수: `PUBLIC_URL=https://<서비스>.onrender.com`, `ADMIN_KEY=<24자 이상 임의 문자열>`, `DATABASE_PATH=/var/data/p3.sqlite3`
 3. Persistent Disk를 `/var/data`에 연결 (없으면 재시작마다 기록이 사라짐)
 4. 참여 코드 발급: `curl -X POST -H "Authorization: Bearer $ADMIN_KEY" https://…/admin/participants` → `{ code, mcp_url }`
