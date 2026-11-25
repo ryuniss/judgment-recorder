@@ -10,7 +10,7 @@ const NODE_W = 180, NODE_H = 196, X_H = 96, COL = 250, ROW = 24, PAD = 40;
 const params = new URLSearchParams(location.search);
 const demo = params.has("demo");
 let app = null, S = null, mode = "canvas", q6 = "";
-let sel = null, scale = 1, sheet = null, toastTimer = null, hostMode = "inline", avail = [];
+let sel = null, scale = 1, toastTimer = null, hostMode = "inline", avail = [], judgeCtx = null;
 
 // ---------- 서버 호출 ----------
 async function call(name, args = {}) {
@@ -33,8 +33,12 @@ function toast(t) {
   const d = document.createElement("div"); d.className = "toast"; d.textContent = t; root.appendChild(d);
   clearTimeout(toastTimer); toastTimer = setTimeout(() => d.remove(), 2600);
 }
-const nodeById = (id) => S?.nodes?.find((n) => n.id === id);
-const tagOf = (n) => `${n.letter}${n.name ? " " + n.name : ""}`;
+// 캔버스 항목 = 이미지 노드 + (지우지 않은) 아이디어 메모
+const ideaItems = () => (S?.ideas || []).filter((i) => i.status !== "dismissed")
+  .map((i) => ({ ...i, kind: "idea", letter: i.label, parents: i.related, text: i.text_final ?? i.text_relayed }));
+const items = () => [...(S?.nodes || []), ...ideaItems()];
+const nodeById = (id) => items().find((n) => n.id === id);
+const tagOf = (n) => n.kind === "idea" ? n.letter : `${n.letter}${n.name ? " " + n.name : ""}`;
 
 function summary() {
   const lines = [`[판단 기록 캔버스 — 학생이 직접 입력한 상태]`, `1순위 기준: ${S.current_criterion?.text ?? "없음"}`];
@@ -42,6 +46,7 @@ function summary() {
     const from = n.parents.map((p) => nodeById(p)?.letter).filter(Boolean).join("+");
     lines.push(`${tagOf(n)}${from ? ` (← ${from})` : ""}: ${n.judgment?.label ?? "판단 전"}${n.judgment ? (n.judgment.reason ? ` / 이유 "${n.judgment.reason}"` : " / 이유 미기록") : ""}`);
   }
+  for (const i of ideaItems()) lines.push(`${i.letter}: "${i.text}" (${i.status === "kept" ? "학생이 남김" : "확인 전"})`);
   lines.push("판단·이유·기준은 학생이 정한 것입니다. 평가하거나 바꾸라고 권하지 마세요.");
   return lines.join("\n");
 }
@@ -50,12 +55,14 @@ function summary() {
 function layout() {
   const depth = {}, out = {};
   const d = (n) => depth[n.id] ??= n.parents.length ? 1 + Math.max(...n.parents.map((p) => (nodeById(p) ? d(nodeById(p)) : -1))) : 0;
-  S.nodes.forEach(d);
+  const all = items().sort((a, b) => a.created_at.localeCompare(b.created_at));
+  all.forEach(d);
   const colY = {};
-  for (const n of S.nodes) {
+  for (const n of all) {
     const c = depth[n.id], x = PAD + c * COL, y = PAD + (colY[c] ?? 0);
-    const h = n.judgment?.label === "제외" ? X_H : NODE_H;
-    out[n.id] = { x, y, w: n.judgment?.label === "제외" ? 120 : NODE_W, h };
+    const small = n.judgment?.label === "제외";
+    const h = n.kind === "idea" ? 112 : small ? X_H : NODE_H;
+    out[n.id] = { x, y, w: small ? 120 : NODE_W, h };
     colY[c] = (colY[c] ?? 0) + h + ROW;
   }
   const W = Math.max(...Object.values(out).map((p) => p.x + p.w), 400) + PAD;
@@ -66,18 +73,20 @@ function layout() {
 // ---------- 화면 ----------
 function render() {
   if (!S?.session || mode === "start") return renderStart();
+  if (mode === "wrap") return renderWrap();
   const { pos, W, H } = layout();
-  const cur = S.current_criterion, prop = S.proposal, n = S.nodes.length;
+  const cur = S.current_criterion, prop = S.proposal, n = S.nodes.length, nm = ideaItems().length;
   const focus = S.focus_node_id;
   root.innerHTML = `
   <div class="top">
     <div class="crit"><span class="k">1순위 기준</span><b>${esc(cur?.text ?? "-")}</b>
       <button class="sec" data-act="crit">기준 변화 기록</button>
+      <button class="ghost" data-act="wrap">오늘 정리</button>
       <button class="ghost" data-act="new">새 탐색 시작</button>
       ${avail.includes("fullscreen") && hostMode !== "fullscreen" ? `<button class="sec" data-act="full">크게 보기</button>` : ""}</div>
     ${prop ? `<div class="prop"><span class="tag">정리 제안 · 확인 전</span><span class="t">${esc(prop.text)}</span>
       <button class="sec" data-act="prop-ok">확인하고 기록</button><button class="ghost" data-act="prop-no">넘기기</button></div>` : ""}
-    <div class="tools"><span class="cnt">이미지 ${n}개</span>
+    <div class="tools"><span class="cnt">이미지 ${n}개${nm ? ` · 메모 ${nm}개` : ""}</span>
       <span class="hint">AI로 만든 결과는 버튼으로 올리거나 캔버스에 끌어다 놓아요</span>
       <div class="zoom"><button data-act="zout" aria-label="축소">−</button><span>${Math.round(scale * 100)}%</span><button data-act="zin" aria-label="확대">+</button></div>
       <button class="sec" data-act="fit">한눈에 보기</button>
@@ -87,20 +96,24 @@ function render() {
     <div class="vp" id="vp">
       <div style="width:${W * scale}px;height:${H * scale}px;position:relative">
       <div class="stage" style="width:${W}px;height:${H}px;transform:scale(${scale})">
-        <svg class="edges" width="${W}" height="${H}">${S.nodes.flatMap((c) => c.parents.filter((p) => pos[p]).map((p) => {
+        <svg class="edges" width="${W}" height="${H}">${items().flatMap((c) => c.parents.filter((p) => pos[p]).map((p) => {
           const a = pos[p], b = pos[c.id], x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2, m = (x1 + x2) / 2;
           return `<path class="${sel === c.id || sel === p ? "hot" : ""}" d="M${x1},${y1} C${m},${y1} ${m},${y2} ${x2},${y2}"/>`;
         })).join("")}</svg>
-        ${S.nodes.map((nd) => nodeHtml(nd, pos[nd.id], focus)).join("")}
+        ${items().map((nd) => nodeHtml(nd, pos[nd.id], focus)).join("")}
       </div></div>
-      ${n ? "" : `<div class="empty"><div><b style="color:#111">첫 이미지를 올려 주세요</b>AI로 만든 이미지를 저장해서 여기에 끌어다 놓거나, 위의 [이미지 올리기]를 눌러요.</div></div>`}
+      ${n || nm ? "" : `<div class="empty"><div><b style="color:#111">첫 이미지를 올려 주세요</b>AI로 만든 이미지를 저장해서 여기에 끌어다 놓거나, 위의 [이미지 올리기]를 눌러요.</div></div>`}
     </div>
-    ${sel && nodeById(sel) ? panelHtml(nodeById(sel)) : ""}
+    ${sel && nodeById(sel) ? (nodeById(sel).kind === "idea" ? ideaPanelHtml(nodeById(sel)) : panelHtml(nodeById(sel))) : ""}
   </div>`;
   bind();
 }
 
 function nodeHtml(nd, p, focus) {
+  if (nd.kind === "idea") return `<button class="node idea ${nd.status === "proposed" ? "pending" : ""} ${sel === nd.id ? "sel" : ""}" data-node="${nd.id}"
+    style="left:${p.x}px;top:${p.y}px" aria-label="${esc(nd.letter)}, ${nd.status === "kept" ? "남김" : "확인 전"}">
+    <span class="nm"><span class="lt">${esc(nd.letter)}</span></span><span class="it">${esc(nd.text)}</span>
+    <span class="lb ${nd.status === "kept" ? "" : "none"}">${nd.status === "kept" ? "남김" : "확인 전"}</span></button>`;
   const lb = nd.judgment?.label;
   const x = lb === "제외";
   return `<button class="node ${x ? "x" : ""} ${sel === nd.id ? "sel" : ""} ${focus === nd.id && !x ? "focus" : ""}" data-node="${nd.id}"
@@ -116,6 +129,7 @@ function panelHtml(nd) {
   return `<aside class="panel" aria-label="${esc(tagOf(nd))}">
     <h2><span class="lt" style="display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;border-radius:5px;background:#111;color:#fff;font-size:13px">${esc(nd.letter)}</span>${esc(nd.name ?? "이름 없음")}
       <button class="close" data-act="close" aria-label="닫기">×</button></h2>
+    ${judgeCtx && judgeCtx.target === nd.id ? `<p class="note">대화에서${judgeCtx.why ? ` (${esc(judgeCtx.why)})` : ""}${judgeCtx.words ? `: "${esc(judgeCtx.words)}"` : ""} — 판단을 직접 골라 주세요.</p>` : ""}
     ${nd.image_url ? `<img class="big" src="${esc(nd.image_url)}" alt="">` : ""}
     <p class="mut">출처: ${from.length ? from.map((f) => esc(tagOf(f))).join(" + ") : "처음 시작"} · ${esc(nd.origin ?? "")}로 올림</p>
     <div class="row"><button class="sec" data-act="talk">대화창에 '${esc(nd.letter)}에 대해 이야기하기' 보내기</button>
@@ -128,6 +142,42 @@ function panelHtml(nd) {
     ${nd.history.length ? `<div><p class="mut" style="font-weight:700;margin-bottom:4px">이 이미지의 판단 이력</p><ul class="hist">${nd.history.slice().reverse().map((h) =>
       `<li>${esc(h.created_at.slice(5, 16).replace("T", " "))} · <b style="color:#111">${esc(h.label)}</b> · ${h.reason ? esc(h.reason) : "이유 미기록"}</li>`).join("")}</ul></div>` : ""}
   </aside>`;
+}
+
+function ideaPanelHtml(i) {
+  const pending = i.status === "proposed";
+  const rel = new Set(i.related);
+  return `<aside class="panel" aria-label="${esc(i.letter)}">
+    <h2><span class="lt" style="display:inline-flex;align-items:center;justify-content:center;padding:0 6px;height:24px;border-radius:5px;background:#111;color:#fff;font-size:12px">${esc(i.letter)}</span>아이디어 메모
+      <button class="close" data-act="close" aria-label="닫기">×</button></h2>
+    ${pending ? `<p class="note">대화에서 AI가 옮겨 적은 말이에요. 내 생각과 맞게 고쳐서 남기거나, 아니면 지워 주세요.</p>
+      <label class="f">메모<textarea id="itext" rows="4">${esc(i.text_relayed)}</textarea></label>
+      <div><p style="font-weight:700;font-size:14px;margin-bottom:6px">어떤 이미지에서 나온 생각인가요? <span class="mut" style="font-weight:400">없으면 비워 둬요</span></p>
+        <div class="srcs">${S.nodes.map((n) => `<button type="button" class="src" data-rel="${n.id}" aria-pressed="${rel.has(n.id)}">${n.image_url ? `<img src="${esc(n.image_url)}" alt="">` : ""}${esc(tagOf(n))}</button>`).join("") || `<span class="mut">아직 이미지가 없어요.</span>`}</div></div>
+      <div class="row"><button class="primary" id="keep">남기기</button><button class="sec" id="drop">지우기</button></div>`
+    : `<p style="font-size:15px;line-height:1.6">${esc(i.text_final ?? i.text_relayed)}</p>
+      ${i.text_final && i.text_final !== i.text_relayed ? `<p class="mut">처음 옮겨진 말: "${esc(i.text_relayed)}"</p>` : ""}
+      <p class="mut">관련 이미지: ${i.related.map((r) => nodeById(r)?.letter).filter(Boolean).join(" + ") || "없음"}</p>
+      <button class="sec" data-act="child">이 메모에서 이어서 이미지 올리기</button>`}
+  </aside>`;
+}
+
+function renderWrap() {
+  const by = (lb) => S.nodes.filter((n) => (n.judgment?.label ?? null) === lb);
+  const kept = ideaItems().filter((i) => i.status === "kept"), pend = ideaItems().filter((i) => i.status === "proposed");
+  const list = (arr) => arr.length ? `<div class="srcs">${arr.map((n) => `<button type="button" class="src" data-go="${n.id}">${n.image_url ? `<img src="${esc(n.image_url)}" alt="">` : ""}${esc(tagOf(n))}</button>`).join("")}</div>` : `<p class="mut">없음</p>`;
+  const crit = S.criteria.filter((c) => c.status === "confirmed");
+  root.innerHTML = `<div class="start" style="max-width:760px"><h1>오늘 정리</h1>
+    <p class="mut">${esc(S.session.intent ?? "")}</p>
+    <div><h2 style="font-size:14px;margin:0 0 8px">1순위 기준의 변화 ${crit.length > 1 ? `(${crit.length - 1}번 바뀜)` : "(처음 그대로)"}</h2>
+      <ol class="tl">${crit.map((c) => `<li><span class="tg">${esc(c.change_type)}</span><span class="mut">${esc(c.created_at.slice(5, 16).replace("T", " "))}</span><p>${esc(c.text)}</p></li>`).join("")}</ol></div>
+    <div><h2 style="font-size:14px;margin:0 0 8px">판단 전 ${by(null).length}개 <span class="mut" style="font-weight:400">눌러서 지금 판단하거나, 그대로 두어도 돼요</span></h2>${list(by(null))}</div>
+    ${["선택", "보류", "아직 모르겠어요", "제외"].map((lb) => `<div><h2 style="font-size:14px;margin:0 0 8px">${lb} ${by(lb).length}개</h2>${list(by(lb))}</div>`).join("")}
+    <div><h2 style="font-size:14px;margin:0 0 8px">남긴 아이디어 ${kept.length}개${pend.length ? ` · 확인 전 ${pend.length}개` : ""}</h2>
+      ${kept.length || pend.length ? `<ul class="hist" style="font-size:14px;color:#111">${[...kept, ...pend].map((i) => `<li><button class="ghost" data-go="${i.id}">${esc(i.letter)}</button> ${esc(i.text)}${i.status === "proposed" ? ' <span class="mut">(확인 전)</span>' : ""}</li>`).join("")}</ul>` : `<p class="mut">없음</p>`}</div>
+    <button class="primary" data-act="back">캔버스로 돌아가기</button></div>`;
+  root.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => { sel = b.dataset.go; mode = "canvas"; render(); }));
+  root.querySelector('[data-act="back"]').onclick = () => { mode = "canvas"; render(); };
 }
 
 function renderStart() {
@@ -163,6 +213,7 @@ function bind() {
   act("full", async () => { try { const r = await app.requestDisplayMode({ mode: "fullscreen" }); hostMode = r?.mode || hostMode; render(); } catch {} });
   act("crit", () => openCriterion());
   act("new", () => { mode = "start"; render(); });
+  act("wrap", () => { mode = "wrap"; render(); call("app_event", { type: "wrap_view" }).catch(() => {}); });
   act("prop-ok", () => openCriterion(S.proposal));
   act("prop-no", async () => { S = await call("app_save_criterion", { proposal_id: S.proposal.id, dismiss: true }); toast("정리 제안을 넘겼어요"); render(); });
   act("talk", async () => {
@@ -171,7 +222,21 @@ function bind() {
     await tellModel(`${summary()}\n학생이 ${tagOf(nd)}에 대해 이야기하려고 합니다.`);
     render(); await say(`${tagOf(nd)}에 대해 이야기해 볼게요.`);
   });
-  const panel = root.querySelector(".panel");
+  const ip = root.querySelector(".panel #keep")?.closest(".panel");
+  if (ip) {
+    const i = nodeById(sel), rel = new Set(i.related);
+    ip.querySelectorAll("[data-rel]").forEach((b) => (b.onclick = () => { const k = b.dataset.rel; rel.has(k) ? rel.delete(k) : rel.add(k); b.setAttribute("aria-pressed", rel.has(k)); }));
+    const done = async (keep) => {
+      const text = ip.querySelector("#itext").value;
+      try { S = await call("app_resolve_idea", { idea_id: i.id, keep, text, related: [...rel] }); } catch (e) { return toast(e.message); }
+      if (!keep) sel = null;
+      await tellModel(`${summary()}\n학생이 ${i.letter}를 ${keep ? `남겼습니다: "${text.trim()}"` : "지웠습니다"}.`);
+      toast(keep ? `${i.letter}를 남겼어요` : `${i.letter}를 지웠어요`); render();
+    };
+    ip.querySelector("#keep").onclick = () => done(true);
+    ip.querySelector("#drop").onclick = () => done(false);
+  }
+  const panel = root.querySelector(".panel #saveJ")?.closest(".panel");
   if (panel) {
     let label = null;
     const save = panel.querySelector("#saveJ");
@@ -184,6 +249,7 @@ function bind() {
       save.disabled = true;
       const nd = nodeById(sel), reason = panel.querySelector("#reason").value;
       try { S = await call("app_set_judgment", { node_id: nd.id, label, reason }); } catch (e) { save.disabled = false; return toast(e.message); }
+      judgeCtx = null;
       const msg = `${tagOf(nd)}: 학생이 '${label}'(으)로 기록. ${reason.trim() ? `학생이 적은 이유: "${reason.trim()}"` : "이유는 적지 않음."}`;
       if (q6) {
         await tellModel(`${summary()}\n${msg}\n이 판단을 평가하지 말고, 다음 질문만 이 문장 그대로 하세요: "${q6}"`);
@@ -270,7 +336,7 @@ async function openSource(file, preset, origin, dropOn = false) {
     <label class="f">이름 (선택)<input type="text" id="nm" maxlength="40" placeholder="예: 벽 반사"></label>
     <div><p style="font-weight:700;font-size:14px">어디서 이어졌나요? <span class="mut" style="font-weight:400">여러 개 고를 수 있어요</span></p>
       ${auto ? `<p class="mut">${dropOn ? "놓은 이미지" : "마지막으로 이야기한 이미지"}를 미리 골라 두었어요. 맞지 않으면 바꿔 주세요.</p>` : ""}
-      <div class="srcs" style="margin-top:8px">${S.nodes.map((n) => `<button type="button" class="src" data-src="${n.id}" aria-pressed="${chosen.has(n.id)}">
+      <div class="srcs" style="margin-top:8px">${[...S.nodes, ...ideaItems().filter((i) => i.status === "kept")].map((n) => `<button type="button" class="src" data-src="${n.id}" aria-pressed="${chosen.has(n.id)}">
         ${n.image_url ? `<img src="${esc(n.image_url)}" alt="">` : ""}${esc(tagOf(n))}</button>`).join("") || `<span class="mut">아직 이미지가 없어요. 처음 시작으로 올라가요.</span>`}</div>
       <p class="mut" style="margin-top:6px" id="srcHint"></p></div>
     <div class="row"><button class="primary" id="ok">올리기</button><button class="sec" id="cancel">취소</button></div></div>`;
@@ -329,9 +395,9 @@ function openCriterion(proposal, words) {
 
 // ---------- 시작 ----------
 async function refresh() {
-  if (demo || !app || !S?.session || mode === "start" || document.visibilityState !== "visible" || root.querySelector(".scrim")) return;
-  try { const n = await call("app_get_state"); const before = JSON.stringify([S.proposal?.id, S.nodes.length, S.focus_node_id]);
-    S = n; if (before !== JSON.stringify([S.proposal?.id, S.nodes.length, S.focus_node_id])) render(); } catch {}
+  if (demo || !app || !S?.session || mode === "start" || root.querySelector(".panel textarea:focus") || document.visibilityState !== "visible" || root.querySelector(".scrim")) return;
+  try { const n = await call("app_get_state"); const sig = (x) => JSON.stringify([x.proposal?.id, x.nodes.length, x.focus_node_id, (x.ideas || []).map((i) => i.status)]);
+    const changed = sig(S) !== sig(n); S = n; if (changed && mode !== "wrap") render(); } catch {}
 }
 
 if (demo) {
@@ -339,13 +405,17 @@ if (demo) {
   if (params.get("mode") === "start") S.session = null;
   if (params.get("mode") === "new") mode = "start";
   if (params.get("mode") === "criterion") setTimeout(() => openCriterion(null, params.get("words") || "광원이 보이는 게 문제가 아니라 책상 전체가 고르게 밝은 게 더 중요한 것 같아"));
-  if (params.get("sel")) sel = S.nodes.find((n) => n.letter === params.get("sel"))?.id ?? null;
+  if (params.get("sel")) sel = items().find((n) => n.letter === params.get("sel"))?.id ?? null;
+  if (params.get("mode") === "judge") { sel = "n1"; judgeCtx = { target: "n1", why: "되돌아감", words: "아까 A가 오히려 나았던 것 같아" }; }
+  if (params.get("mode") === "wrap") mode = "wrap";
   render();
 } else {
   app = new App({ name: "판단 기록", version: "0.2.0" }, { availableDisplayModes: ["inline", "fullscreen"] });
   app.ontoolresult = (p) => {
     const sc = p?.structuredContent; if (!sc || !("nodes" in sc)) return;
-    S = sc; mode = sc.mode === "start" ? "start" : "canvas"; render();
+    S = sc; mode = sc.mode === "start" ? "start" : sc.mode === "wrap" ? "wrap" : "canvas";
+    if (sc.mode === "judge" && sc.target) { sel = sc.target; judgeCtx = { target: sc.target, why: sc.why, words: sc.student_words }; }
+    render();
     if (sc.mode === "criterion") openCriterion(null, sc.student_words);
   };
   app.onhostcontextchanged = (ctx) => { if (ctx?.displayMode) hostMode = ctx.displayMode; if (ctx?.availableDisplayModes) avail = ctx.availableDisplayModes; if (S) render(); };
@@ -369,6 +439,10 @@ function DEMO() {
     criteria: [{ id: "c1", change_type: "처음", status: "confirmed", text: "눈부시지 않을 것. 밤늦게 오래 쓰니까", created_at: t + "00:00" }],
     proposal: { id: "p1", text: "광원이 직접 보이지 않을 것", status: "proposed" },
     focus_node_id: "n3",
+    ideas: [
+      { id: "i1", num: 1, label: "메모1", text_relayed: "빛이 벽을 타고 내려오면 책상 전체가 은은해질 것 같아", text_final: null, related: ["n3"], status: "proposed", created_at: t + "14" },
+      { id: "i2", num: 2, label: "메모2", text_relayed: "갓 안쪽을 천으로 감싸면?", text_final: "갓 안쪽을 천으로 감싸 빛을 한 번 거르기", related: ["n2"], status: "kept", created_at: t + "08" },
+    ],
     nodes: [
       { id: "n1", letter: "A", name: "깊은 갓", parents: [], origin: "버튼", image_url: svgImg("A 깊은 갓", "#3a3a3a", "#9a9a9a"), created_at: t + "05", judgment: { label: "제외", reason: "답답해 보임", created_at: t + "20" }, history: [{ label: "제외", reason: "답답해 보임", created_at: t + "20" }] },
       { id: "n2", letter: "B", name: "확산 패널", parents: [], origin: "버튼", image_url: svgImg("B 확산 패널", "#555", "#ccc"), created_at: t + "06", judgment: { label: "보류", reason: null, created_at: t + "21" }, history: [{ label: "보류", reason: null, created_at: t + "21" }] },
@@ -378,13 +452,14 @@ function DEMO() {
 }
 function demoCall(name, a) {
   const T = new Date().toISOString();
-  if (name === "app_save_session") { S = DEMO(); S.focus_node_id = null; S.nodes = []; S.proposal = null; S.session = { intent: a.intent }; S.criteria = [{ id: "c1", change_type: "처음", status: "confirmed", text: a.criterion, created_at: T }]; S.current_criterion = { text: a.criterion }; }
+  if (name === "app_save_session") { S = DEMO(); S.focus_node_id = null; S.nodes = []; S.ideas = []; S.proposal = null; S.session = { intent: a.intent }; S.criteria = [{ id: "c1", change_type: "처음", status: "confirmed", text: a.criterion, created_at: T }]; S.current_criterion = { text: a.criterion }; }
   if (name === "app_add_node") { const id = "n" + (S.nodes.length + 1); S.nodes.push({ id, letter: nextLetter(), name: a.name || null, parents: a.parents, origin: a.origin, image_url: a.image, created_at: T, judgment: null, history: [] }); S.focus_node_id = id; }
   if (name === "app_set_judgment") { const n = nodeById(a.node_id), j = { label: a.label, reason: a.reason?.trim() || null, created_at: T }; n.judgment = j; n.history.push(j); }
   if (name === "app_save_criterion") {
     if (a.proposal_id) S.proposal = null;
     if (!a.dismiss) { S.criteria.push({ id: "c" + T, change_type: a.change_type, status: "confirmed", text: a.text, created_at: T }); S.current_criterion = { text: a.text }; }
   }
+  if (name === "app_resolve_idea") { const i = S.ideas.find((x) => x.id === a.idea_id); i.status = a.keep ? "kept" : "dismissed"; i.text_final = a.keep ? (a.text?.trim() || i.text_relayed) : null; if (a.related) i.related = a.related; }
   if (name === "app_event" && a.type === "focus") S.focus_node_id = a.node_id;
   if (name === "app_config") return { q6 };
   return S;

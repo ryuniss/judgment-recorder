@@ -38,3 +38,8 @@ CREATE TABLE IF NOT EXISTS relayed_turns (
 -- 화면 조작 기록(초점 이동, 올리기 취소 등). 분석용.
 CREATE TABLE IF NOT EXISTS events (
   id TEXT PRIMARY KEY, code TEXT NOT NULL, session_id TEXT, type TEXT NOT NULL, payload TEXT, created_at TEXT NOT NULL);
+-- 아이디어 메모: 대화 AI가 학생 말을 옮겨 올린 것(text_relayed)과 학생이 확정한 문장(text_final)을 둘 다 남긴다.
+CREATE TABLE IF NOT EXISTS ideas (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, num INTEGER NOT NULL, text_relayed TEXT NOT NULL, text_final TEXT,
+  related TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL CHECK(status IN ('proposed','kept','dismissed')),
+  created_at TEXT NOT NULL, resolved_at TEXT);
