@@ -334,10 +334,11 @@ function mcpFor(code) {
 // ---------- HTTP ----------
 const app = express();
 app.use(express.json({ limit: "12mb" }));
+app.use(express.urlencoded({ extended: false, limit: "64kb" })); // OAuth 토큰 요청
 app.use((req, res, next) => { // 확장 프로그램용 CORS
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Headers", "content-type, mcp-session-id, mcp-protocol-version, authorization");
-  res.set("Access-Control-Expose-Headers", "mcp-session-id");
+  res.set("Access-Control-Expose-Headers", "mcp-session-id, www-authenticate");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
@@ -425,8 +426,10 @@ app.get("/auth/google/callback", async (req, res) => {
         .run(claims.sub, claims.email ?? null, claims.name ?? null, code, t0);
       row = { code };
     }
+    const pending = open(decodeURIComponent(cookie(req, "jr_oauth") || ""));
     res.set("Set-Cookie", [`jr_sess=${encodeURIComponent(sign(row.code))}; HttpOnly; Path=/; Max-Age=${60 * 60 * 24 * 180}; SameSite=Lax${secure}`,
-      `jr_state=; Path=/; Max-Age=0`]);
+      `jr_state=; Path=/; Max-Age=0`, `jr_oauth=; Path=/; Max-Age=0`]);
+    if (pending?.t === "pending" && pending.exp > Date.now()) return finishAuthorize(res, pending, row.code);
     res.redirect("/join/me");
   } catch (e) {
     res.status(400).type("html").send(`<p>로그인하지 못했어요. <a href="/join">다시 시도</a></p>`);
@@ -449,6 +452,7 @@ app.get("/join/:code", (req, res) => {
 
 function joinPage(res, code, email) {
   const mcp = `${PUBLIC_URL}/mcp/${code}`;
+  const shared = MCP_URL;
   const e = esc;
   res.type("html").send(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="jr-server" content="${e(PUBLIC_URL)}"><meta name="jr-code" content="${e(code)}"><title>판단 기록 연결</title>
@@ -456,12 +460,12 @@ function joinPage(res, code, email) {
 <body><main><h1>판단 기록 연결</h1>${email ? `<p class="mut">${e(email)}(으)로 로그인했어요</p>` : ""}
 <p id="ext" class="st">확장 프로그램을 확인하는 중… 설치하지 않았다면 먼저 설치한 뒤 이 페이지를 새로고침해 주세요.</p>
 <ol>
-<li><b>커넥터 주소 복사</b><div class="box"><input id="u" readonly value="${e(mcp)}"><button id="c">복사</button></div></li>
-<li><b>Claude</b>: Customize → Connectors → + Add → Add custom connector → 이름 "판단 기록", 주소 붙여넣기, 인증은 No sign in</li>
-<li><b>ChatGPT</b>: 설정 → 앱(Apps) → 고급 설정에서 개발자 모드 켜기 → 앱 만들기 → 이름 "판단 기록", 주소 붙여넣기, 인증 없음</li>
-<li>새 대화에서 "판단 기록"을 켜고 "탐색을 시작할게요"라고 보내기</li>
+<li><b>커넥터 주소 복사</b> (모두 같은 주소예요)<div class="box"><input id="u" readonly value="${e(shared)}"><button id="c">복사</button></div></li>
+<li><b>Claude</b>: 설정 → 커넥터 → 추가 → 커스텀 커넥터 추가 → 이름 "판단 기록", 주소 붙여넣기 → 추가한 뒤 <b>연결</b>을 눌러 Google로 한 번 로그인</li>
+<li><b>ChatGPT</b>: 설정 → 앱 → 고급 설정에서 개발자 모드 켜기 → 앱 만들기 → 주소 붙여넣기, 인증 OAuth → 연결해서 Google로 로그인</li>
+<li>새 대화에서 "판단 기록"을 켜고 <b>"판단 기록으로 탐색을 시작할게요"</b>라고 보내기</li>
 </ol>
-<p class="mut">커넥터 주소는 나만 쓰는 주소예요. 다른 사람과 나누지 마세요.</p></main>
+<details><summary class="mut">로그인 없이 쓰는 예비 주소</summary><p class="mut">연결 로그인이 안 될 때만 쓰세요. 나만 쓰는 주소라 다른 사람과 나누면 안 돼요.</p><p class="mut" style="word-break:break-all">${e(mcp)}</p></details></main>
 <script>document.getElementById("c").onclick=async()=>{const u=document.getElementById("u");u.select();try{await navigator.clipboard.writeText(u.value)}catch{document.execCommand("copy")}document.getElementById("c").textContent="복사됨"};</script>
 </body></html>`);
 }
@@ -472,13 +476,137 @@ app.get("/img/:id", (req, res) => {
   res.set("Content-Type", row.mime).set("Cache-Control", "private, max-age=86400").send(Buffer.from(row.data));
 });
 
-app.all("/mcp/:code", async (req, res) => {
-  if (!okCode(req.params.code)) return res.status(401).json({ error: "unknown participant" });
-  const server = mcpFor(req.params.code);
+
+// ---------- 커넥터 안에서 로그인 (MCP 인증 규격, OAuth 2.1 + PKCE) ----------
+// 학생은 공용 주소 하나(/mcp)를 커넥터에 넣고, Claude·ChatGPT가 띄우는 '연결'에서 Google 로그인을 한 번 한다.
+// 클라이언트 등록·인가 코드·토큰은 모두 SESSION_SECRET으로 서명한 값이라 DB가 초기화돼도 연결이 끊기지 않는다.
+const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+const seal = (o) => sign(b64(o));
+function open(sv) { const v = unsign(sv); if (!v) return null; try { return JSON.parse(Buffer.from(v, "base64url").toString()); } catch { return null; } }
+const MCP_URL = `${PUBLIC_URL}/mcp`;
+const ALLOWED_REDIRECT = /^(https:\/\/(claude\.ai|claude\.com|chatgpt\.com|chat\.openai\.com)\/|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/)/;
+const ACCESS_TTL = 24 * 3600 * 1000, REFRESH_TTL = 180 * 24 * 3600 * 1000;
+const usedCodes = new Map(); // 인가 코드 재사용 방지(5분)
+
+async function clientInfo(clientId) {
+  if (/^https:\/\//.test(clientId || "")) { // Client ID Metadata Document
+    try {
+      const r = await fetch(clientId, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(5000) });
+      const d = await r.json();
+      return d.client_id === clientId ? { redirect_uris: d.redirect_uris || [], name: d.client_name } : null;
+    } catch { return null; }
+  }
+  const c = open(clientId || "");
+  return c?.t === "client" ? c : null;
+}
+
+const prm = (_q, res) => res.json({ resource: MCP_URL, authorization_servers: [PUBLIC_URL], scopes_supported: ["judgment"],
+  bearer_methods_supported: ["header"], resource_name: "판단 기록" });
+app.get("/.well-known/oauth-protected-resource", prm);
+app.get("/.well-known/oauth-protected-resource/mcp", prm);
+const asMeta = (_q, res) => res.json({ issuer: PUBLIC_URL, authorization_endpoint: `${PUBLIC_URL}/oauth/authorize`,
+  token_endpoint: `${PUBLIC_URL}/oauth/token`, registration_endpoint: `${PUBLIC_URL}/oauth/register`,
+  response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"],
+  code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"], scopes_supported: ["judgment"],
+  client_id_metadata_document_supported: true });
+app.get("/.well-known/oauth-authorization-server", asMeta);
+app.get("/.well-known/oauth-authorization-server/mcp", asMeta);
+app.get("/.well-known/openid-configuration", asMeta);
+
+app.post("/oauth/register", (req, res) => {
+  const uris = req.body?.redirect_uris;
+  if (!Array.isArray(uris) || !uris.length || !uris.every((u) => typeof u === "string" && ALLOWED_REDIRECT.test(u)))
+    return res.status(400).json({ error: "invalid_redirect_uri", error_description: "허용되지 않은 redirect_uri" });
+  const name = String(req.body.client_name || "").slice(0, 80);
+  const client_id = seal({ t: "client", redirect_uris: uris, name });
+  res.status(201).json({ client_id, client_id_issued_at: Math.floor(Date.now() / 1000), client_name: name, redirect_uris: uris,
+    token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] });
+});
+
+app.get("/oauth/authorize", async (req, res) => {
+  const q = req.query;
+  const bad = (m) => res.status(400).type("html").send(`<p>연결 요청이 올바르지 않아요: ${esc(m)}</p>`);
+  const client = await clientInfo(String(q.client_id || ""));
+  if (!client) return bad("client_id");
+  const redirect = String(q.redirect_uri || "");
+  if (!client.redirect_uris.includes(redirect) || !ALLOWED_REDIRECT.test(redirect)) return bad("redirect_uri");
+  const back = (err) => { const u = new URL(redirect); u.searchParams.set("error", err); if (q.state) u.searchParams.set("state", String(q.state)); return res.redirect(u.toString()); };
+  if (q.response_type !== "code") return back("unsupported_response_type");
+  if (!q.code_challenge || q.code_challenge_method !== "S256") return back("invalid_request");
+  if (q.resource && String(q.resource).replace(/\/$/, "") !== MCP_URL) return back("invalid_target");
+  if (!G.id) return bad("Google 로그인이 설정되지 않았어요");
+  const pending = seal({ t: "pending", client_id: String(q.client_id), redirect_uri: redirect, challenge: String(q.code_challenge),
+    state: q.state ? String(q.state) : null, exp: Date.now() + 10 * 60 * 1000 });
+  res.set("Set-Cookie", `jr_oauth=${encodeURIComponent(pending)}; HttpOnly; Path=/; Max-Age=600; SameSite=Lax${secure}`);
+  res.type("html").send(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>판단 기록 연결</title><style>${PAGE_CSS}</style></head>
+<body><main><h1>판단 기록 연결</h1>
+<p>${esc(client.name || "대화 앱")}에 판단 기록을 연결해요. Google 계정으로 한 번 로그인하면 이후에는 다시 로그인하지 않아도 돼요.</p>
+<p class="mut">연구를 위해 이메일과 이름을 받아요. 이 정보는 연구자만 볼 수 있는 곳에 따로 보관하고, 분석 자료에는 익명 번호만 남아요.</p>
+<a class="btn" href="/auth/google">Google로 로그인</a></main></body></html>`);
+});
+
+function finishAuthorize(res, p, participant) {
+  const code = seal({ t: "code", client_id: p.client_id, redirect_uri: p.redirect_uri, challenge: p.challenge, p: participant,
+    exp: Date.now() + 5 * 60 * 1000, n: crypto.randomBytes(8).toString("hex") });
+  const u = new URL(p.redirect_uri);
+  u.searchParams.set("code", code); if (p.state) u.searchParams.set("state", p.state); u.searchParams.set("iss", PUBLIC_URL);
+  res.redirect(u.toString());
+}
+
+function issueTokens(clientId, participant) {
+  const t = Date.now();
+  return { access_token: seal({ t: "access", c: clientId.slice(0, 64), p: participant, aud: MCP_URL, exp: t + ACCESS_TTL }), token_type: "Bearer",
+    expires_in: ACCESS_TTL / 1000, refresh_token: seal({ t: "refresh", c: clientId.slice(0, 64), p: participant, exp: t + REFRESH_TTL, n: crypto.randomBytes(6).toString("hex") }),
+    scope: "judgment" };
+}
+
+app.post("/oauth/token", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const b = req.body || {}, fail = (e, d) => res.status(400).json({ error: e, error_description: d });
+  if (b.grant_type === "authorization_code") {
+    const c = open(String(b.code || ""));
+    if (!c || c.t !== "code" || c.exp < Date.now()) return fail("invalid_grant", "코드 만료 또는 오류");
+    if (usedCodes.has(c.n)) return fail("invalid_grant", "이미 사용한 코드");
+    if (b.client_id && b.client_id !== c.client_id) return fail("invalid_grant", "client_id 불일치");
+    if (b.redirect_uri && b.redirect_uri !== c.redirect_uri) return fail("invalid_grant", "redirect_uri 불일치");
+    const v = String(b.code_verifier || "");
+    if (!v || crypto.createHash("sha256").update(v).digest("base64url") !== c.challenge) return fail("invalid_grant", "PKCE 검증 실패");
+    usedCodes.set(c.n, c.exp); for (const [k, e] of usedCodes) if (e < Date.now()) usedCodes.delete(k);
+    return res.json(issueTokens(c.client_id, c.p));
+  }
+  if (b.grant_type === "refresh_token") {
+    const r = open(String(b.refresh_token || ""));
+    if (!r || r.t !== "refresh" || r.exp < Date.now()) return fail("invalid_grant", "갱신 토큰 만료 또는 오류");
+    if (b.client_id && b.client_id.slice(0, 64) !== r.c) return fail("invalid_grant", "client_id 불일치");
+    return res.json(issueTokens(b.client_id || r.c, r.p));
+  }
+  return fail("unsupported_grant_type");
+});
+
+async function serveMcp(code, req, res) {
+  const server = mcpFor(code);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on("close", () => { transport.close(); server.close(); });
   await server.connect(transport);
   await transport.handleRequest(req, res, req.body);
+}
+
+// 공용 주소: 로그인한 학생의 토큰으로 누구인지 안다
+app.all("/mcp", async (req, res) => {
+  const a = open((req.get("authorization") || "").replace(/^Bearer\s+/i, ""));
+  if (!a || a.t !== "access" || a.exp < Date.now() || a.aud !== MCP_URL) {
+    res.set("WWW-Authenticate", `Bearer resource_metadata="${PUBLIC_URL}/.well-known/oauth-protected-resource/mcp", scope="judgment"`);
+    return res.status(401).json({ error: "invalid_token", error_description: "판단 기록에 로그인해 주세요" });
+  }
+  // 무료 플랜처럼 DB가 초기화된 경우에도 서명된 토큰이면 참여 코드를 되살린다
+  if (!okCode(a.p)) db.prepare("INSERT OR IGNORE INTO participants(code,created_at) VALUES(?,?)").run(a.p, now());
+  await serveMcp(a.p, req, res);
+});
+
+// 예전 방식(개인 주소, 로그인 없음): 연구자가 발급한 코드나 예비용
+app.all("/mcp/:code", async (req, res) => {
+  if (!okCode(req.params.code)) return res.status(401).json({ error: "unknown participant" });
+  await serveMcp(req.params.code, req, res);
 });
 
 // 연구자: 참여 코드 발급, 전체 내보내기

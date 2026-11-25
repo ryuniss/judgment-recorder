@@ -88,18 +88,23 @@ Claude·ChatGPT가 MCP 서버에 붙으려면 **HTTPS 공개 주소**가 필요�
 4. 참여 코드 발급: `curl -X POST -H "Authorization: Bearer $ADMIN_KEY" https://…/admin/participants` → `{ code, mcp_url }`
 5. 전체 내보내기: `curl -H "Authorization: Bearer $ADMIN_KEY" https://…/admin/export`
 
-## 학생 쪽 연결 (Google 로그인)
+## 학생 쪽 연결 (커넥터 안에서 Google 로그인)
 
-학생에게는 **공용 링크 하나**(`https://…/join`)만 준다. 아무 Google 계정으로 로그인하면 계정마다 참여 코드가 자동으로 만들어진다.
-1. (선택) 확장 프로그램 설치
-2. `…/join` 열기 → **Google로 로그인** → 내 연결 페이지(`/join/me`)로 이동. 이때 확장 프로그램이 서버 주소와 코드를 자동 저장한다(수집은 켜지 않음).
-3. 같은 페이지의 [복사]로 커넥터 주소를 복사해 추가한다.
-   - Claude: Customize → Connectors → + Add → Add custom connector → 이름 "판단 기록", 주소 붙여넣기, 인증 No sign in
-   - ChatGPT: 설정 → 앱 → 고급 설정에서 개발자 모드 → 앱 만들기 → 주소 붙여넣기, 인증 없음 (**메뉴 이름·플랜 조건 미확인**)
-4. 새 대화에서 "판단 기록"을 켜고 "탐색을 시작할게요"
-5. 다른 기기나 브라우저에서도 같은 계정으로 로그인하면 **같은 코드**가 나온다. 코드를 외우거나 입력할 일이 없다.
+학생 전원이 **같은 주소 하나** `https://<서비스>.onrender.com/mcp` 를 커넥터에 넣는다. 참여 코드를 주고받을 일이 없다.
+1. Claude: 설정 → 커넥터 → 추가 → 커스텀 커넥터 추가 → 이름 "판단 기록", 주소 `…/mcp` → 추가한 뒤 **연결** → 동의 화면 → Google로 로그인(한 번)
+   ChatGPT: 개발자 모드 → 앱 만들기 → 주소 `…/mcp`, 인증 OAuth → 연결 (**미확인**)
+2. 이후에는 다시 로그인하지 않는다. 토큰은 하루마다 Claude가 자동으로 갱신하고, 갱신 토큰은 180일 유효.
+3. 새 대화에서 "판단 기록"을 켜고 **"판단 기록으로 탐색을 시작할게요"**. Claude는 커넥터 도구를 필요할 때 검색해 불러오므로, 첫 마디에 "판단 기록"이 들어가야 캔버스가 뜬다(2026-11-25 Free 계정 시험).
+4. (선택) 확장 프로그램을 쓰는 학생만 `/join`에서 같은 Google 계정으로 로그인 → 확장 프로그램 자동 설정.
 
-로그인 없이 쓰려면 연구자가 발급한 개인 링크(`/join/<코드>`)도 그대로 쓸 수 있다.
+같은 Google 계정이면 커넥터 로그인과 `/join` 로그인이 같은 참여 코드로 이어진다. 예전 개인 주소(`/mcp/<코드>`, 로그인 없음)도 예비로 그대로 동작한다.
+
+### 커넥터 로그인 구현 (MCP 인증 규격)
+- `/.well-known/oauth-protected-resource(/mcp)` → 인가 서버 = 이 서버. `/mcp`는 토큰이 없으면 401 + `WWW-Authenticate: Bearer resource_metadata=…`
+- `/.well-known/oauth-authorization-server`: 동적 등록(`/oauth/register`)과 Client ID Metadata Document 둘 다 지원, PKCE(S256) 필수, 공개 클라이언트
+- `/oauth/authorize` → 동의 화면 → 기존 Google 로그인(`/auth/google`, Google 쪽 설정 변경 없음) → 인가 코드 → `/oauth/token`(코드 재사용 거부, 갱신 토큰)
+- 허용 redirect: claude.ai, claude.com, chatgpt.com, chat.openai.com, localhost
+- 클라이언트 등록·코드·토큰은 `SESSION_SECRET`으로 서명한 값(DB에 저장하지 않음). 무료 플랜에서 DB가 초기화돼도 연결은 유지된다. **`SESSION_SECRET`을 바꾸면 모든 학생이 다시 연결해야 한다.**
 
 ### 개인정보 분리
 - 이메일·이름은 `identities` 표에만 있다. 연구 데이터 내보내기(`/admin/export`)에는 **들어가지 않는다.**
@@ -140,7 +145,8 @@ Claude·ChatGPT가 MCP 서버에 붙으려면 **HTTPS 공개 주소**가 필요�
 6. 기준을 바꾸는 말 → `propose_criterion`이 정리 제안으로만 뜨는지
 
 ## 알아 둘 한계
-- 참여 코드가 MCP 주소에 들어가는 방식은 시제품용 인증이다. 코드가 새면 다른 사람이 그 학생 이름으로 기록할 수 있다.
+- 커넥터 로그인은 아무 Google 계정이나 받는다(테스트 상태에서는 Google 테스트 사용자만). 학교 계정만 받으려면 `hd` 도메인 확인을 추가한다.
+- 예비 개인 주소(`/mcp/<코드>`)는 주소 자체가 열쇠다. 새면 다른 사람이 그 학생 이름으로 기록할 수 있다.
 - 본 연구 전 **학교 계정 로그인**으로 바꾼다. 필요한 것: (1) MCP 서버에 OAuth 2.1 로그인 추가(Claude 커넥터의 "Sign in" 방식), (2) 학교 계정 제공자(Google Workspace 또는 Microsoft 365)로 위임 로그인, 학교 도메인만 허용, (3) 확장 프로그램도 같은 로그인을 쓰도록 변경, (4) 로그인 계정 ↔ 연구 참여 ID 대응표는 연구자만 보관(익명화).
 - 대화 AI는 학생이 쓰는 ChatGPT·Claude 그대로라서, 의견을 주거나 이유를 대신 쓰는 것을 막을 수 없다. 서버 지시문·도구 설명·`updateModelContext`로 요청만 할 수 있다. 지켰는지는 대화 기록으로 점검한다.
 - ChatGPT·미드저니에서 만든 이미지는 캔버스로 자동으로 오지 않는다. 학생이 저장해서 올리거나 끌어다 놓는다.
