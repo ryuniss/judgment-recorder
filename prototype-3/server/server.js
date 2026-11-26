@@ -90,7 +90,8 @@ const logEvent = (code, sid, type, payload) =>
   db.prepare("INSERT INTO events(id,code,session_id,type,payload,created_at) VALUES(?,?,?,?,?,?)").run(id(), code, sid ?? null, type, JSON.stringify(payload ?? {}), now());
 
 // ---------- MCP 서버 (참여 코드별) ----------
-const VIEW_URI = "ui://judgment/canvas-v2.html";
+// 화면을 바꿀 때마다 주소의 버전을 올린다(호스트가 이전 화면을 캐시해 두는 경우 대비)
+const VIEW_URI = "ui://judgment/canvas-v3.html";
 function buildViewHtml() {
   const bundle = fs.readFileSync(path.join(DIR, "node_modules/@modelcontextprotocol/ext-apps/dist/src/app-with-deps.js"), "utf8");
   const m = bundle.match(/export\{([^}]*)\};?\s*$/);
@@ -258,9 +259,13 @@ function mcpFor(code) {
 
   registerAppTool(server, "app_save_session", {
     description: "학생이 적은 디자인 콘셉트와 판단 기준(1순위 필수, 2·3순위 선택) 저장",
-    inputSchema: { intent: z.string().max(2000), criteria: z.array(z.object({ rank: z.number().int().min(1).max(3), text: z.string().max(1000), basis: z.string().max(1000).optional() })).min(1).max(3) },
+    inputSchema: { intent: z.string().max(2000),
+      criteria: z.array(z.object({ rank: z.number().int().min(1).max(3), text: z.string().max(1000), basis: z.string().max(1000).optional() })).max(3).optional(),
+      criterion: z.string().max(1000).optional().describe("이전 화면 호환: 1순위 기준 하나") },
     _meta: appOnly,
-  }, async ({ intent, criteria }) => {
+  }, async ({ intent, criteria, criterion }) => {
+    if (!criteria?.length && criterion) criteria = [{ rank: 1, text: criterion }]; // 호스트에 남아 있는 이전 화면도 저장되게
+    criteria ??= [];
     const first = criteria.find((c) => c.rank === 1 && c.text.trim());
     if (!intent.trim() || !first) return err("디자인 콘셉트와 1순위 기준을 적어 주세요.");
     const sid = id(), t = now();
