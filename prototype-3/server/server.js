@@ -91,7 +91,7 @@ const logEvent = (code, sid, type, payload) =>
 
 // ---------- MCP 서버 (참여 코드별) ----------
 // 화면을 바꿀 때마다 주소의 버전을 올린다(호스트가 이전 화면을 캐시해 두는 경우 대비)
-const VIEW_URI = "ui://judgment/canvas-v3.html";
+const VIEW_URI = "ui://judgment/canvas-v4.html";
 function buildViewHtml() {
   const bundle = fs.readFileSync(path.join(DIR, "node_modules/@modelcontextprotocol/ext-apps/dist/src/app-with-deps.js"), "utf8");
   const m = bundle.match(/export\{([^}]*)\};?\s*$/);

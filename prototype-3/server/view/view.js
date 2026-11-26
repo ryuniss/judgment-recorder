@@ -13,10 +13,27 @@ let app = null, S = null, mode = "canvas", q6 = "";
 let showMore = false, sel = null, scale = 1, toastTimer = null, hostMode = "inline", avail = [], judgeCtx = null;
 
 // ---------- 서버 호출 ----------
+// 서버 오류를 학생용 문구로 바꾼다. 연결·형식 문제는 학생 잘못이 아니므로 화면에 안내를 고정하고 AI에게도 알린다.
+const RESTART = "새 대화에서 '판단 기록으로 탐색을 시작할게요'를 보내 다시 시작해 주세요.";
+let broken = false;
+function markBroken(detail) {
+  if (broken) return; broken = true;
+  const d = document.createElement("div"); d.className = "broken"; d.setAttribute("role", "alert");
+  d.innerHTML = `<b>이 캔버스는 저장할 수 없는 상태예요.</b> 지금까지 저장된 기록은 그대로 있어요. ${esc(RESTART)}`;
+  document.body.prepend(d);
+  tellModel(`[판단 기록 캔버스 오류] 화면이 서버에 저장하지 못했습니다(${detail}). 이것은 연결·버전 문제이며 학생이 입력을 잘못한 것이 아닙니다. 원인을 추측하지 말고 학생에게 "${RESTART}"라고만 안내하세요.`);
+}
 async function call(name, args = {}) {
   if (demo) return demoCall(name, args);
-  const r = await app.callServerTool({ name, arguments: args });
-  if (r.isError) throw new Error(r.content?.[0]?.text || "저장하지 못했어요");
+  let r;
+  try { r = await app.callServerTool({ name, arguments: args }); }
+  catch (e) { markBroken(String(e?.message || e).slice(0, 120)); throw new Error("저장하지 못했어요. " + RESTART); }
+  if (r.isError) {
+    const msg = r.content?.[0]?.text || "";
+    // 서버가 학생용으로 쓴 한국어 문구는 그대로, 개발용 오류(형식·연결)는 안내로 바꾼다
+    if (!msg || /MCP error|-32602|validation|Invalid|unknown participant|invalid_token|Unauthorized/i.test(msg)) { markBroken(msg.slice(0, 120)); throw new Error("저장하지 못했어요. " + RESTART); }
+    throw new Error(msg);
+  }
   return r.structuredContent;
 }
 async function tellModel(text) {
@@ -420,6 +437,7 @@ async function refresh() {
 }
 
 if (demo) {
+  if (params.get("broken")) setTimeout(() => markBroken("demo"), 50);
   S = DEMO(); q6 = params.get("q6") || "";
   if (params.get("mode") === "start") S.session = null;
   if (params.get("mode") === "new") mode = "start";
