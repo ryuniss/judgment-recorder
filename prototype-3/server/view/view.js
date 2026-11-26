@@ -47,7 +47,7 @@ async function say(text) { // 대화창에 학생 메시지로 보낸다(버튼�
 }
 function toast(t) {
   document.querySelector(".toast")?.remove();
-  const d = document.createElement("div"); d.className = "toast"; d.textContent = t; root.appendChild(d);
+  const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.appendChild(d);
   clearTimeout(toastTimer); toastTimer = setTimeout(() => d.remove(), 2600);
 }
 // 캔버스 항목 = 이미지 노드 + (지우지 않은) 아이디어 메모
@@ -59,7 +59,7 @@ const curCrit = () => S?.current_criteria?.length ? S.current_criteria : (S?.cur
 const tagOf = (n) => n.kind === "idea" ? n.letter : `${n.letter}${n.name ? " " + n.name : ""}`;
 
 function summary() {
-  const lines = [`[판단 기록 캔버스 — 학생이 직접 입력한 상태]`, `디자인 콘셉트: ${S.session?.intent ?? "-"}`,
+  const lines = [`[판단 기록 캔버스 — 학생이 직접 입력한 상태]`, `디자인 콘셉트: ${S.concept ?? S.session?.intent ?? "-"}`,
     ...curCrit().map((c) => `${c.rank ?? 1}순위 기준: ${c.text}`)];
   for (const n of S.nodes) {
     const from = n.parents.map((p) => nodeById(p)?.letter).filter(Boolean).join("+");
@@ -109,7 +109,7 @@ function render() {
   const focus = S.focus_node_id;
   root.innerHTML = `
   <div class="top">
-    <p class="concept"><span class="k">콘셉트</span> ${esc(S.session.intent ?? "")}</p>
+    <p class="concept"><span class="k">콘셉트</span> ${esc(S.concept ?? S.session.intent ?? "")}</p>
     <div class="crit"><span class="k">1순위 기준</span><b>${esc(cur?.text ?? "-")}</b>
       ${curCrit().length > 1 ? `<button class="ghost" data-act="more">${showMore ? "접기" : `기준 ${curCrit().length - 1}개 더`}</button>` : ""}
       <button class="sec" data-act="crit">기준 변화 기록</button>
@@ -213,7 +213,8 @@ function renderWrap() {
   const list = (arr) => arr.length ? `<div class="srcs">${arr.map((n) => `<button type="button" class="src" data-go="${n.id}">${n.image_url ? `<img src="${esc(n.image_url)}" alt="">` : ""}${esc(tagOf(n))}</button>`).join("")}</div>` : `<p class="mut">없음</p>`;
   const crit = S.criteria.filter((c) => c.status === "confirmed").sort((a, b) => (a.rank ?? 1) - (b.rank ?? 1) || a.created_at.localeCompare(b.created_at));
   root.innerHTML = `<div class="start" style="max-width:760px"><h1>오늘 정리</h1>
-    <p><span class="mut">콘셉트</span><br>${esc(S.session.intent ?? "")}</p>
+    <p><span class="mut">콘셉트</span><br>${esc(S.concept ?? S.session.intent ?? "")}</p>
+    ${S.concepts?.length ? `<p class="mut">처음 콘셉트: ${esc(S.session.intent ?? "")} → ${S.concepts.length}번 고침</p>` : ""}
     <div><h2 style="font-size:14px;margin:0 0 8px">판단 기준의 변화 ${crit.some((c) => c.change_type !== "처음") ? `(${crit.filter((c) => c.change_type !== "처음").length}번 바뀜)` : "(처음 그대로)"}</h2>
       <ol class="tl">${crit.map((c) => `<li><span class="tg">${c.rank ?? 1}순위 · ${esc(c.change_type)}</span><span class="mut">${esc(c.created_at.slice(5, 16).replace("T", " "))}</span><p>${esc(c.text)}</p></li>`).join("")}</ol></div>
     <div><h2 style="font-size:14px;margin:0 0 8px">판단 전 ${by(null).length}개 <span class="mut" style="font-weight:400">눌러서 지금 판단하거나, 그대로 두어도 돼요</span></h2>${list(by(null))}</div>
@@ -429,7 +430,7 @@ async function openSource(file, preset, origin, dropOn = false) {
         ${n.image_url ? `<img src="${esc(n.image_url)}" alt="">` : ""}${esc(tagOf(n))}</button>`).join("") || `<span class="mut">아직 이미지가 없어요. 처음 시작으로 올라가요.</span>`}</div>
       <p class="mut" style="margin-top:6px" id="srcHint"></p></div>
     <div class="row"><button class="primary" id="ok">올리기</button><button class="sec" id="cancel">취소</button></div></div>`;
-  root.appendChild(scrim);
+  document.body.appendChild(scrim); // root 밖에 붙여야 화면을 다시 그려도 창이 닫히지 않는다
   const hint = () => (scrim.querySelector("#srcHint").textContent = chosen.size ? `출처: ${[...chosen].map((c) => nodeById(c).letter).join(" + ")}` : "아무것도 고르지 않으면 처음 시작(새 갈래)으로 올라가요.");
   hint();
   scrim.querySelectorAll("[data-src]").forEach((b) => (b.onclick = () => {
@@ -465,11 +466,15 @@ function openCriterion(proposal, words) {
     <div><p style="font-weight:700;font-size:14px;margin-bottom:6px">어떤 변화인가요?</p>
       <div class="chips" role="group" aria-label="변화 종류">${CHANGES.map((c) => `<button type="button" aria-pressed="false" data-ch="${c}">${c}</button>`).join("")}</div></div>
     <label class="f"><span id="ctl">지금의 ${rank}순위 기준</span><textarea id="ct" rows="3">${esc(textFor(rank))}</textarea></label>
-    <p class="mut">이전 기준은 지워지지 않고 위 기록에 남아요.</p>
+    <details id="cdet"><summary style="font-size:14px;font-weight:700;cursor:pointer">디자인 콘셉트도 바뀌었나요?</summary>
+      <label class="f" style="margin-top:8px">지금의 디자인 콘셉트<textarea id="cc" rows="3">${esc(S.concept ?? S.session.intent ?? "")}</textarea></label></details>
+    <p class="mut">이전 기준과 콘셉트는 지워지지 않고 기록에 남아요. 기준만, 콘셉트만 기록해도 돼요.</p>
     <div class="row"><button class="primary" id="ok" disabled>기록</button><button class="sec" id="cancel">닫기</button></div></div>`;
-  root.appendChild(scrim);
-  const ok = scrim.querySelector("#ok"), ct = scrim.querySelector("#ct");
-  const upd = () => (ok.disabled = !(change && ct.value.trim()));
+  document.body.appendChild(scrim); // root 밖에 붙여야 화면을 다시 그려도 창이 닫히지 않는다
+  const ok = scrim.querySelector("#ok"), ct = scrim.querySelector("#ct"), cc = scrim.querySelector("#cc");
+  const concept0 = cc.value.trim(), conceptChanged = () => cc.value.trim() && cc.value.trim() !== concept0;
+  const upd = () => (ok.disabled = !((change && ct.value.trim()) || conceptChanged()));
+  cc.oninput = upd;
   scrim.querySelectorAll("[data-ch]").forEach((b) => (b.onclick = () => {
     change = b.dataset.ch; scrim.querySelectorAll("[data-ch]").forEach((x) => x.setAttribute("aria-pressed", x === b)); upd();
   }));
@@ -481,17 +486,20 @@ function openCriterion(proposal, words) {
   scrim.querySelector("#cancel").onclick = () => scrim.remove();
   ok.onclick = async () => {
     ok.disabled = true;
-    try { S = await call("app_save_criterion", { change_type: change, text: ct.value, rank, proposal_id: proposal?.id }); }
-    catch (e) { ok.disabled = false; return toast(e.message); }
+    const done = [];
+    try {
+      if (conceptChanged()) { S = await call("app_save_concept", { text: cc.value }); done.push("디자인 콘셉트를 고쳤습니다"); }
+      if (change && ct.value.trim()) { S = await call("app_save_criterion", { change_type: change, text: ct.value, rank, proposal_id: proposal?.id }); done.push(`${rank}순위 기준 변화를 '${change}'(으)로 기록했습니다`); }
+    } catch (e) { ok.disabled = false; return toast(e.message); }
     scrim.remove();
-    await tellModel(`${summary()}\n학생이 ${rank}순위 기준 변화를 '${change}'(으)로 기록했습니다.`);
-    toast("기준을 기록했어요"); render();
+    await tellModel(`${summary()}\n학생이 ${done.join(", ")}.`);
+    toast(done.length > 1 ? "콘셉트와 기준을 기록했어요" : conceptChanged() ? "콘셉트를 기록했어요" : "기준을 기록했어요"); render();
   };
 }
 
 // ---------- 시작 ----------
 async function refresh() {
-  if (demo || !app || !S?.session || mode === "start" || root.querySelector(".panel textarea:focus") || document.visibilityState !== "visible" || root.querySelector(".scrim")) return;
+  if (demo || !app || !S?.session || mode === "start" || root.querySelector(".panel textarea:focus") || document.visibilityState !== "visible" || document.querySelector(".scrim")) return;
   try { const n = await call("app_get_state"); const sig = (x) => JSON.stringify([x.proposal?.id, x.nodes.length, x.focus_node_id, (x.ideas || []).map((i) => i.status)]);
     const changed = sig(S) !== sig(n); S = n; if (changed && mode !== "wrap") render(); } catch {}
 }
@@ -508,8 +516,10 @@ if (demo) {
   render();
 } else {
   app = new App({ name: "판단 기록", version: "0.2.0" }, { availableDisplayModes: ["inline", "fullscreen"] });
+  let gotResult = false;
   app.ontoolresult = async (p) => {
     const sc = p?.structuredContent; if (!sc || !sc.mode) return;
+    gotResult = true;
     // AI 쪽 결과에는 모드만 담고(사용량 절약), 전체 상태는 화면이 따로 받아 온다
     try { S = await call("app_get_state"); } catch { return; }
     mode = sc.mode === "start" ? "start" : sc.mode === "wrap" ? "wrap" : "canvas";
@@ -521,7 +531,7 @@ if (demo) {
   app.connect().then(async () => {
     const ctx = app.getHostContext?.(); hostMode = ctx?.displayMode || hostMode; avail = ctx?.availableDisplayModes || [];
     try { q6 = (await call("app_config")).q6 || ""; } catch {}
-    if (!S) { try { S = await call("app_get_state"); render(); } catch { root.innerHTML = `<p class="mut" style="padding:16px">불러오는 중…</p>`; } }
+    if (!S && !gotResult) { try { S = await call("app_get_state"); if (!gotResult) render(); } catch { root.innerHTML = `<p class="mut" style="padding:16px">불러오는 중…</p>`; } }
     setInterval(refresh, 10000);
   }).catch((e) => { root.innerHTML = `<p class="note" style="margin:16px">화면을 연결하지 못했어요: ${esc(e.message)}</p>`; });
 }
@@ -566,6 +576,7 @@ function demoCall(name, a) {
       S.current_criteria = [...S.current_criteria.filter((c) => c.rank !== r), { text: a.text, rank: r }].sort((x, y) => x.rank - y.rank); S.current_criterion = S.current_criteria.find((c) => c.rank === 1); }
   }
   if (name === "app_resolve_idea") { const i = S.ideas.find((x) => x.id === a.idea_id); i.status = a.keep ? "kept" : "dismissed"; i.text_final = a.keep ? (a.text?.trim() || i.text_relayed) : null; if (a.related) i.related = a.related; i.about = a.concept ? "concept" : null; }
+  if (name === "app_save_concept") { S.concepts = [...(S.concepts || []), { text: a.text, created_at: T }]; S.concept = a.text; }
   if (name === "app_set_position") S.positions[a.item_id] = { x: a.x, y: a.y };
   if (name === "app_reset_positions") S.positions = {};
   if (name === "app_event" && a.type === "focus") S.focus_node_id = a.node_id;

@@ -57,7 +57,8 @@ function state(code, { rawLimit = 12 } = {}) {
   const ideas = db.prepare("SELECT * FROM ideas WHERE session_id=? ORDER BY num").all(sid)
     .map((i) => ({ ...i, related: JSON.parse(i.related || "[]"), label: `${i.kind === "summary" ? "정리" : "메모"}${i.num}` }));
   const positions = Object.fromEntries(db.prepare("SELECT item_id, x, y FROM positions WHERE session_id=?").all(sid).map((p) => [p.item_id, { x: p.x, y: p.y }]));
-  return { session, criteria, nodes, ideas, positions,
+  const concepts = db.prepare("SELECT text, created_at FROM concepts WHERE session_id=? ORDER BY created_at").all(sid);
+  return { session, criteria, nodes, ideas, positions, concepts, concept: concepts.at(-1)?.text ?? session?.intent ?? null,
     current_criterion: criteria.filter((c) => c.status === "confirmed" && (c.rank ?? 1) === 1).at(-1) || null,
     current_criteria: [1, 2, 3].map((r) => criteria.filter((c) => c.status === "confirmed" && (c.rank ?? 1) === r).at(-1)).filter((c) => c && c.text),
     proposal: criteria.filter((c) => c.status === "proposed").at(-1) || null,
@@ -68,7 +69,7 @@ function state(code, { rawLimit = 12 } = {}) {
 function summaryText(s) {
   if (!s.session) return "아직 탐색이 시작되지 않았습니다. 학생이 캔버스에서 디자인 콘셉트와 판단 기준을 직접 적을 때까지 기다리세요.";
   s.ideas ??= [];
-  const lines = [`디자인 콘셉트(학생 작성): ${s.session.intent ?? "-"}`,
+  const lines = [`디자인 콘셉트(학생 작성): ${s.concept ?? "-"}`,
     ...s.current_criteria.map((c) => `${c.rank ?? 1}순위 기준(학생 작성): ${c.text}`)];
   for (const n of s.nodes) {
     const from = n.parents.map((p) => s.nodes.find((x) => x.id === p)?.letter ?? s.ideas.find((x) => x.id === p)?.label).filter(Boolean).join("+");
@@ -91,7 +92,7 @@ const logEvent = (code, sid, type, payload) =>
 
 // ---------- MCP 서버 (참여 코드별) ----------
 // 화면을 바꿀 때마다 주소의 버전을 올린다(호스트가 이전 화면을 캐시해 두는 경우 대비)
-const VIEW_URI = "ui://judgment/canvas-v8.html";
+const VIEW_URI = "ui://judgment/canvas-v9.html";
 function buildViewHtml() {
   const bundle = fs.readFileSync(path.join(DIR, "node_modules/@modelcontextprotocol/ext-apps/dist/src/app-with-deps.js"), "utf8");
   const m = bundle.match(/export\{([^}]*)\};?\s*$/);
@@ -108,6 +109,7 @@ const RULES = `판단 기록 캔버스 규칙:
 - 판단(선택·보류·제외·아직 모르겠어요)·이유·기준은 학생이 캔버스에서 정한다. 대신 정하거나 우열을 평가하거나 바꾸라고 권하지 않는다. 비교를 물으면 지금 기준을 짚고 학생 생각을 먼저 묻는다.
 - 이미지는 알파벳(A, B…)으로 가리킨다. 학생이 이미지 내용을 물으면 view_image로 본다. 이 대화에서 이미 본 이미지는 다시 부르지 않는다.
 - 말로 낸 새 아이디어 → note_idea(학생 말 그대로). "이걸로 갈게"·"아까 A가 나았어" → open_judgment. "기준 바꿀래" → open_criterion. 학생이 말하지 않았는데 기준이 바뀐 듯하면 propose_criterion(제안만). "오늘은 여기까지" → end_session.
+- 판단 창·기준 창을 연 뒤에는 "창에서 직접 적어 주세요" 정도로 한두 문장만 답한다. 바꿀 내용·선택지·순위를 정리해 주거나 제안하지 않는다.
 - 대화에서 결론·결정·새로 알게 된 점이 나오면(학생이 말했거나 동의한 것) 스스로 note_summary로 한두 문장 올린다(관련 이미지·콘셉트 연결). 한 응답에 최대 하나, 단순한 질문·답에는 올리지 않는다. 학생에게 확인을 재촉하지 않는다(학생 확인 전엔 학생 판단이 아님).${RECORD_TURNS ? "\n- 매 응답 끝에 record_turn(학생 메시지와 내 답을 그대로) 한 번." : ""}`;
 
 function mcpFor(code) {
@@ -370,6 +372,18 @@ function mcpFor(code) {
     db.prepare("INSERT INTO criteria(id,session_id,text,change_type,prev_id,status,author,created_at,rank,basis) VALUES(?,?,?,?,?,?,?,?,?,?)")
       .run(id(), s.id, text.trim(), change_type, cur?.id ?? null, "confirmed", proposal_id ? "student(제안 확인)" : "student", t, rank, (basis || "").trim() || null);
     return ok("기준을 기록했습니다.");
+  });
+
+  registerAppTool(server, "app_save_concept", {
+    description: "학생이 고친 디자인 콘셉트 저장(이력으로 쌓임)",
+    inputSchema: { text: z.string().max(2000) },
+    _meta: appOnly,
+  }, async ({ text }) => {
+    const s = currentSession(code);
+    if (!s) return err("탐색이 아직 시작되지 않았습니다.");
+    if (!text.trim()) return err("콘셉트를 적어 주세요.");
+    db.prepare("INSERT INTO concepts(id,session_id,text,author,created_at) VALUES(?,?,?,?,?)").run(id(), s.id, text.trim(), "student", now());
+    return ok("콘셉트를 기록했습니다.");
   });
 
   registerAppTool(server, "app_set_position", {
@@ -696,7 +710,7 @@ app.get("/admin/identities", admin, (_q, res) => res.json(db.prepare("SELECT pro
 app.get("/admin/export", admin, (_q, res) => {
   const t = (n) => db.prepare(`SELECT * FROM ${n}`).all();
   res.json({ exported_at: now(), participants: t("participants"), sessions: t("sessions"), raw: t("raw"),
-    criteria: t("criteria"), nodes: t("nodes"), ideas: t("ideas"), positions: t("positions"), node_judgments: t("node_judgments"), relayed_turns: t("relayed_turns"),
+    criteria: t("criteria"), concepts: t("concepts"), nodes: t("nodes"), ideas: t("ideas"), positions: t("positions"), node_judgments: t("node_judgments"), relayed_turns: t("relayed_turns"),
     events: t("events"), judgments: t("judgments"), review_triggers: t("review_triggers") });
 });
 

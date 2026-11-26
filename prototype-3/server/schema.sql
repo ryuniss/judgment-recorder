@@ -45,3 +45,5 @@ CREATE TABLE IF NOT EXISTS ideas (
   created_at TEXT NOT NULL, resolved_at TEXT);
 -- 학생이 캔버스에서 직접 옮긴 위치(옮긴 항목만). 자동 정렬로 되돌리면 지운다.
 CREATE TABLE IF NOT EXISTS positions (item_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, updated_at TEXT NOT NULL);
+-- 디자인 콘셉트 변경 이력(학생 작성). 처음 콘셉트는 sessions.intent.
+CREATE TABLE IF NOT EXISTS concepts (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, text TEXT NOT NULL, author TEXT NOT NULL, created_at TEXT NOT NULL);
