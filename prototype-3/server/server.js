@@ -23,7 +23,7 @@ const db = new DatabaseSync(DB_PATH);
 db.exec("PRAGMA journal_mode = WAL");
 db.exec(fs.readFileSync(path.join(DIR, "schema.sql"), "utf8"));
 // 추가 열: 기준 순위(1·2·3), 콘셉트와의 연결(학생 작성)
-for (const sql of ["ALTER TABLE criteria ADD COLUMN rank INTEGER NOT NULL DEFAULT 1", "ALTER TABLE criteria ADD COLUMN basis TEXT"]) { try { db.exec(sql); } catch { /* 이미 있음 */ } }
+for (const sql of ["ALTER TABLE criteria ADD COLUMN rank INTEGER NOT NULL DEFAULT 1", "ALTER TABLE criteria ADD COLUMN basis TEXT", "ALTER TABLE nodes ADD COLUMN thumb_id TEXT"]) { try { db.exec(sql); } catch { /* 이미 있음 */ } }
 
 const id = () => crypto.randomBytes(8).toString("hex");
 const now = () => new Date().toISOString();
@@ -53,11 +53,9 @@ function state(code, { rawLimit = 12 } = {}) {
       judgment: h.at(-1) || null, history: h };
   });
   const focus = db.prepare("SELECT payload FROM events WHERE session_id=? AND type='focus' ORDER BY created_at DESC LIMIT 1").get(sid);
-  const raw = db.prepare("SELECT id, host, role, text, images, created_at FROM raw WHERE code=? ORDER BY created_at DESC LIMIT ?")
-    .all(code, rawLimit).map((r) => ({ ...r, images: JSON.parse(r.images || "[]").map((i) => `${PUBLIC_URL}/img/${i}`) }));
   const ideas = db.prepare("SELECT * FROM ideas WHERE session_id=? ORDER BY num").all(sid)
     .map((i) => ({ ...i, related: JSON.parse(i.related || "[]"), label: `메모${i.num}` }));
-  return { session, criteria, nodes, ideas, raw: raw.reverse(),
+  return { session, criteria, nodes, ideas,
     current_criterion: criteria.filter((c) => c.status === "confirmed" && (c.rank ?? 1) === 1).at(-1) || null,
     current_criteria: [1, 2, 3].map((r) => criteria.filter((c) => c.status === "confirmed" && (c.rank ?? 1) === r).at(-1)).filter((c) => c && c.text),
     proposal: criteria.filter((c) => c.status === "proposed").at(-1) || null,
@@ -91,7 +89,7 @@ const logEvent = (code, sid, type, payload) =>
 
 // ---------- MCP 서버 (참여 코드별) ----------
 // 화면을 바꿀 때마다 주소의 버전을 올린다(호스트가 이전 화면을 캐시해 두는 경우 대비)
-const VIEW_URI = "ui://judgment/canvas-v5.html";
+const VIEW_URI = "ui://judgment/canvas-v6.html";
 function buildViewHtml() {
   const bundle = fs.readFileSync(path.join(DIR, "node_modules/@modelcontextprotocol/ext-apps/dist/src/app-with-deps.js"), "utf8");
   const m = bundle.match(/export\{([^}]*)\};?\s*$/);
@@ -101,19 +99,13 @@ function buildViewHtml() {
   return html.replace("/*VIEW_SCRIPT*/", () => script);
 }
 
+// 대화 AI에게 주는 규칙. 매 대화 맥락에 들어가므로 짧게 유지한다(사용량).
+const RECORD_TURNS = process.env.RECORD_TURNS === "1"; // 켜면 AI가 매 응답을 다시 보내 출력이 약 2배가 된다
 const RULES = `판단 기록 캔버스 규칙:
-- 대화가 시작되면 다른 도움보다 먼저 open_canvas를 부른다. 학생이 새 주제로 시작한다고 하면 new_exploration=true로 부른다.
-- 학생이 캔버스 시작 화면에서 디자인 콘셉트와 판단 기준을 직접 적기 전에는 이미지를 만들거나 아이디어를 제안하지 않는다. 기준을 대신 적어 주거나 예시 기준을 제시하지도 않는다. "캔버스에서 기준부터 적어 주세요"라고만 안내한다.
-- 이미지의 판단(선택·보류·제외·아직 모르겠어요), 이유, 1순위 기준은 학생이 캔버스에서 직접 정한다. 대신 정하거나, 어느 쪽이 낫다고 평가하거나, 판단을 바꾸라고 권하지 않는다.
-- 학생이 캔버스 이미지(A, B, C…)에 대해 말하면 답하기 전에 view_image로 그 이미지를 직접 본다. 이미지를 볼 수 없다고 말하거나 생김새를 되묻지 않는다.
-- 학생이 이미지에 대해 말하면 알파벳(A, B, C…)으로 가리킨다.
-- 학생이 이미지 없이 말로 새 아이디어를 꺼내면("이런 생각이 났어", "~하면 어떨까") note_idea로 학생 말을 그대로 올린다. 아이디어를 먼저 발전시키거나 다듬지 않는다.
-- 학생이 캔버스의 이미지를 다음 작업에 쓰겠다고 하거나("이걸로 갈게", "C로 하자") 앞의 이미지로 되돌아가려 하면("아까 A가 나았던 것 같아") open_judgment를 부른다. 캔버스에 아직 없는 결과라면 먼저 캔버스에 올려 달라고만 안내한다.
-- 학생이 어느 쪽이 나은지 물으면 우열을 정해 주지 않는다. 지금 1순위 기준을 짚고 학생 생각을 먼저 묻는다.
-- 학생이 오늘 작업을 끝내겠다고 하면("오늘은 여기까지") end_session을 부른다. 판단 전으로 남은 이미지를 대신 정리하지 않는다.
-- 학생이 기준을 바꾸고 싶다고 직접 말하면 open_criterion을 부른다.
-- 학생이 그렇게 말하지 않았는데 기준이 구체화되거나 바뀐 것처럼 들려도 단정하지 않는다. 필요하면 propose_criterion으로 '정리 제안'만 남기고, 학생이 캔버스에서 확인하게 한다.
-- 매 응답을 다 쓴 뒤 마지막에 record_turn을 한 번 부른다. 학생 메시지와 방금 쓴 답을 줄이거나 고치지 말고 그대로 넣는다.`;
+- 대화를 시작하면 먼저 open_canvas(새 주제면 new_exploration=true). 학생이 콘셉트·판단 기준을 적기 전에는 이미지·아이디어를 만들지 않고, 기준 예시도 주지 않는다.
+- 판단(선택·보류·제외·아직 모르겠어요)·이유·기준은 학생이 캔버스에서 정한다. 대신 정하거나 우열을 평가하거나 바꾸라고 권하지 않는다. 비교를 물으면 지금 기준을 짚고 학생 생각을 먼저 묻는다.
+- 이미지는 알파벳(A, B…)으로 가리킨다. 학생이 이미지 내용을 물으면 view_image로 본다. 이 대화에서 이미 본 이미지는 다시 부르지 않는다.
+- 말로 낸 새 아이디어 → note_idea(학생 말 그대로). "이걸로 갈게"·"아까 A가 나았어" → open_judgment. "기준 바꿀래" → open_criterion. 학생이 말하지 않았는데 기준이 바뀐 듯하면 propose_criterion(제안만). "오늘은 여기까지" → end_session.${RECORD_TURNS ? "\n- 매 응답 끝에 record_turn(학생 메시지와 내 답을 그대로) 한 번." : ""}`;
 
 function mcpFor(code) {
   const server = new McpServer({ name: "judgment-recorder-3", version: "0.2.0" }, { instructions: RULES });
@@ -133,7 +125,7 @@ function mcpFor(code) {
 
   registerAppTool(server, "open_canvas", {
     title: "판단 기록 캔버스 열기",
-    description: `학생이 아이데이션을 시작하거나 이어갈 때, 또는 캔버스·지금까지의 이미지를 보고 싶다고 할 때 부른다. 처음이면 학생이 디자인 콘셉트와 판단 기준을 직접 적는 화면이 먼저 열린다.\n${RULES}`,
+    description: "판단 기록 캔버스를 연다. 학생이 탐색을 시작·이어가거나 캔버스를 보려 할 때. 처음이면 학생이 콘셉트와 판단 기준을 적는 화면부터 열린다.",
     inputSchema: { new_exploration: z.boolean().optional().describe("학생이 새 주제·새 과제로 처음부터 시작한다고 말했을 때만 true") },
     _meta: { ui: { resourceUri: VIEW_URI }, "openai/outputTemplate": VIEW_URI },
   }, async ({ new_exploration } = {}) => {
@@ -143,27 +135,27 @@ function mcpFor(code) {
     const text = start
       ? "캔버스 시작 화면을 열었습니다. 학생이 디자인 콘셉트와 판단 기준을 직접 적을 때까지 이미지 생성이나 아이디어 제안을 하지 말고 기다리세요. 기준 예시도 주지 마세요."
       : `캔버스를 열었습니다(지난 탐색을 이어서).\n${summaryText(s)}`;
-    return { content: [{ type: "text", text }], structuredContent: { ...s, mode: start ? "start" : "canvas" } };
+    return { content: [{ type: "text", text }], structuredContent: { mode: start ? "start" : "canvas" } };
   });
 
   registerAppTool(server, "open_criterion", {
     title: "기준 기록 열기",
-    description: "학생이 판단 기준을 바꾸고 싶다, 고치고 싶다, 다시 정하고 싶다고 직접 말했을 때 부른다. 캔버스와 함께 기준 기록 창이 열리고, 학생이 변화 종류와 새 기준을 직접 적는다. student_words에는 학생이 한 말을 그대로 넣는다. 새 기준 문장을 대신 써 주거나 변화 종류를 정하지 않는다. (학생이 바꾸겠다고 하지 않았는데 기준이 달라진 것 같다고 AI가 느낄 때는 이 도구가 아니라 propose_criterion을 쓴다.)",
+    description: "학생이 판단 기준을 바꾸겠다고 직접 말했을 때 기준 기록 창을 연다. 새 기준·변화 종류는 학생이 적는다.",
     inputSchema: { student_words: z.string().max(2000).optional().describe("학생이 기준을 바꾸고 싶다며 한 말, 그대로") },
     _meta: { ui: { resourceUri: VIEW_URI }, "openai/outputTemplate": VIEW_URI },
   }, async ({ student_words } = {}) => {
     const s = state(code);
     logEvent(code, s.session?.id, "open_criterion", { student_words: student_words ?? null });
-    if (!s.session) return { content: [{ type: "text", text: "아직 처음 기준이 없어 시작 화면을 열었습니다. 학생이 직접 적을 때까지 기다리세요." }], structuredContent: { ...s, mode: "start" } };
+    if (!s.session) return { content: [{ type: "text", text: "아직 처음 기준이 없어 시작 화면을 열었습니다. 학생이 직접 적을 때까지 기다리세요." }], structuredContent: { mode: "start" } };
     return { content: [{ type: "text", text: "기준 기록 창을 열었습니다. 학생이 변화 종류와 새 기준을 직접 적을 때까지 기준을 대신 정하거나 제안하지 마세요." }],
-      structuredContent: { ...s, mode: "criterion", student_words: student_words ?? null } };
+      structuredContent: { mode: "criterion", student_words: student_words ?? null } };
   });
 
   const findNode = (sid, letter) => db.prepare("SELECT id, letter FROM nodes WHERE session_id=? AND upper(letter)=upper(?)").get(sid, String(letter || "").trim());
 
   server.registerTool("note_idea", {
     title: "아이디어 메모",
-    description: "학생이 이미지 없이 말로 새 아이디어를 꺼냈을 때 부른다. student_words에는 학생이 한 말을 줄이거나 다듬지 말고 그대로 넣는다. related에는 학생이 그 아이디어와 함께 말한 이미지 알파벳만 넣는다(말하지 않았으면 비움). 캔버스에 '확인 전' 메모로 뜨고, 학생이 고쳐서 남기거나 지운다.",
+    description: "학생이 말로 낸 새 아이디어를 캔버스에 '메모 · 확인 전'으로 올린다. student_words는 학생 말 그대로, related는 학생이 함께 말한 이미지 알파벳만.",
     inputSchema: { student_words: z.string().max(2000), related: z.array(z.string().max(4)).max(8).optional() },
   }, async ({ student_words, related = [] }) => {
     const s = currentSession(code);
@@ -177,34 +169,34 @@ function mcpFor(code) {
 
   registerAppTool(server, "open_judgment", {
     title: "판단 열기",
-    description: "학생이 캔버스의 이미지를 다음 작업에 쓰겠다고 하거나(반영), 앞의 이미지로 되돌아가려 할 때(되돌아감), 또는 판단을 기록하고 싶다고 할 때(요청) 부른다. 그 이미지의 판단 창이 열리고 학생이 선택·보류·제외·아직 모르겠어요와 이유를 직접 고른다. 판단을 미리 말하거나 평가하지 않는다.",
+    description: "학생이 이미지를 다음 작업에 쓰려 하거나(반영), 앞 이미지로 되돌아가거나(되돌아감), 판단을 기록하려 할 때(요청) 그 이미지의 판단 창을 연다. 판단은 학생이 고른다.",
     inputSchema: { letter: z.string().max(4).describe("이미지 알파벳"), why: z.enum(["반영", "되돌아감", "요청"]),
       student_words: z.string().max(2000).optional().describe("학생이 한 말 그대로") },
     _meta: { ui: { resourceUri: VIEW_URI }, "openai/outputTemplate": VIEW_URI },
   }, async ({ letter, why, student_words }) => {
     const s = currentSession(code);
-    if (!s) return { content: [{ type: "text", text: "아직 1순위 기준이 없어 시작 화면을 열었습니다." }], structuredContent: { ...state(code), mode: "start" } };
+    if (!s) return { content: [{ type: "text", text: "아직 1순위 기준이 없어 시작 화면을 열었습니다." }], structuredContent: { mode: "start" } };
     db.prepare("INSERT INTO review_triggers(id,code,session_id,what,created_at) VALUES(?,?,?,?,?)")
       .run(id(), code, s.id, JSON.stringify({ why, letter, student_words: student_words ?? null }), now());
     const n = findNode(s.id, letter);
-    if (!n) return { content: [{ type: "text", text: `캔버스에 ${letter}가 없습니다. 학생에게 그 결과를 먼저 캔버스에 올려 달라고만 안내하세요.` }], structuredContent: { ...state(code), mode: "canvas" } };
+    if (!n) return { content: [{ type: "text", text: `캔버스에 ${letter}가 없습니다. 학생에게 그 결과를 먼저 캔버스에 올려 달라고만 안내하세요.` }], structuredContent: { mode: "canvas" } };
     logEvent(code, s.id, "focus", { node_id: n.id });
     return { content: [{ type: "text", text: `${n.letter}의 판단 창을 열었습니다. 학생이 직접 고를 때까지 판단을 제안하거나 평가하지 마세요.` }],
-      structuredContent: { ...state(code), mode: "judge", target: n.id, student_words: student_words ?? null, why } };
+      structuredContent: { mode: "judge", target: n.id, student_words: student_words ?? null, why } };
   });
 
   registerAppTool(server, "end_session", {
     title: "오늘 정리",
-    description: "학생이 오늘 작업을 끝내겠다고 할 때 부른다. 판단 전으로 남은 이미지, 남긴 아이디어, 기준 변화를 보여 주는 정리 화면이 열린다. 남은 것을 대신 판단하거나 정리하지 않는다.",
+    description: "학생이 오늘 작업을 끝낼 때 정리 화면(판단 전 이미지·메모·기준 변화)을 연다.",
     inputSchema: { student_words: z.string().max(2000).optional() },
     _meta: { ui: { resourceUri: VIEW_URI }, "openai/outputTemplate": VIEW_URI },
   }, async ({ student_words } = {}) => {
     const s = state(code);
-    if (!s.session) return { content: [{ type: "text", text: "아직 시작된 탐색이 없습니다." }], structuredContent: { ...s, mode: "start" } };
+    if (!s.session) return { content: [{ type: "text", text: "아직 시작된 탐색이 없습니다." }], structuredContent: { mode: "start" } };
     const undecided = s.nodes.filter((n) => !n.judgment).length;
     logEvent(code, s.session.id, "end", { student_words: student_words ?? null, images: s.nodes.length, undecided });
     return { content: [{ type: "text", text: `정리 화면을 열었습니다. 이미지 ${s.nodes.length}개 중 판단 전 ${undecided}개. 학생이 직접 보게 두고, 남은 것을 대신 판단하지 마세요.` }],
-      structuredContent: { ...s, mode: "wrap" } };
+      structuredContent: { mode: "wrap" } };
   });
 
   registerAppTool(server, "app_resolve_idea", {
@@ -224,7 +216,7 @@ function mcpFor(code) {
 
   server.registerTool("view_image", {
     title: "캔버스 이미지 보기",
-    description: "학생이 캔버스에 올린 이미지를 알파벳으로 불러와 직접 본다. 학생이 A, B, C… 이미지에 대해 이야기하거나 비교하려 할 때, 답하기 전에 먼저 부른다. 최대 4장. 판단·이유는 학생이 정한 것이므로 평가하지 않는다.",
+    description: "캔버스 이미지를 알파벳으로 불러와 본다(축소본, 최대 4장). 학생이 이미지 내용을 물을 때만, 같은 이미지는 한 대화에 한 번.",
     inputSchema: { letters: z.array(z.string().max(4)).min(1).max(4).describe("이미지 알파벳, 예: [\"A\"] 또는 [\"B\",\"C\"]") },
   }, async ({ letters }) => {
     const st = state(code);
@@ -233,7 +225,7 @@ function mcpFor(code) {
     for (const l of letters) {
       const n = st.nodes.find((x) => x.letter.toUpperCase() === String(l).trim().toUpperCase());
       if (!n) { content.push({ type: "text", text: `${l}: 캔버스에 없는 이미지입니다.` }); continue; }
-      const row = db.prepare("SELECT i.mime, i.data FROM nodes n JOIN images i ON i.id = n.image_id WHERE n.id=?").get(n.id);
+      const row = db.prepare("SELECT i.mime, i.data FROM nodes n JOIN images i ON i.id = coalesce(n.thumb_id, n.image_id) WHERE n.id=?").get(n.id);
       const from = n.parents.map((p) => st.nodes.find((x) => x.id === p)?.letter ?? st.ideas.find((x) => x.id === p)?.label).filter(Boolean).join("+");
       content.push({ type: "text", text: `${n.letter}${n.name ? " " + n.name : ""}${from ? ` (← ${from})` : ""} · 학생 판단: ${n.judgment ? n.judgment.label : "판단 전"}` });
       if (row) content.push({ type: "image", data: Buffer.from(row.data).toString("base64"), mimeType: row.mime });
@@ -244,11 +236,11 @@ function mcpFor(code) {
 
   server.registerTool("get_canvas_state", {
     title: "캔버스 상태 보기",
-    description: "학생이 캔버스에 올린 이미지(A, B, C…), 출처 연결, 학생이 정한 판단과 1순위 기준을 읽는다. 학생이 이미지를 알파벳으로 말할 때 무엇인지 확인하려고 쓴다. 읽기만 한다.",
+    description: "캔버스의 이미지 목록·출처·학생 판단·기준을 글로 읽는다(이미지 없이, 가벼움).",
     inputSchema: {},
   }, async () => ({ content: [{ type: "text", text: summaryText(state(code)) + NO_SESSION(code) }] }));
 
-  server.registerTool("record_turn", {
+  if (RECORD_TURNS) server.registerTool("record_turn", {
     title: "대화 기록",
     description: "매 응답을 다 쓴 뒤 마지막에 한 번 부른다. user_text에는 이번 학생 메시지를, assistant_text에는 방금 쓴 답을 줄이거나 고치지 말고 그대로 넣는다. focus에는 이번에 주로 이야기한 이미지 알파벳(없으면 비움).",
     inputSchema: { user_text: z.string().max(20000), assistant_text: z.string().max(40000), focus: z.string().max(4).optional() },
@@ -261,7 +253,7 @@ function mcpFor(code) {
 
   server.registerTool("propose_criterion", {
     title: "기준 정리 제안",
-    description: "학생의 말에서 1순위 기준이 더 구체적이 되었거나 달라진 것처럼 들릴 때만 부른다. text는 학생 말을 바탕으로 한 기준 문장, basis는 근거가 된 학생 말 그대로. 이것은 '정리 제안'일 뿐이며 학생이 캔버스에서 확인하기 전까지 기준이 아니다. 변화의 종류(구체화·바뀜 등)는 학생이 고르므로 정하지 않는다.",
+    description: "학생 말에서 기준이 구체화·변화한 듯할 때 '정리 제안'만 남긴다(학생 확인 전엔 기준 아님). basis는 근거가 된 학생 말 그대로.",
     inputSchema: { text: z.string().max(1000), basis: z.string().max(2000), rank: z.number().int().min(1).max(3).optional().describe("어느 순위 기준에 대한 제안인지(기본 1)") },
   }, async ({ text, basis, rank = 1 }) => {
     const s = currentSession(code);
@@ -299,10 +291,10 @@ function mcpFor(code) {
 
   registerAppTool(server, "app_add_node", {
     description: "학생이 올린 이미지와 학생이 고른 출처 저장",
-    inputSchema: { image: z.string().max(8_000_000), name: z.string().max(60).optional(),
+    inputSchema: { image: z.string().max(8_000_000), thumb: z.string().max(1_000_000).optional().describe("AI가 볼 축소본(768px)"), name: z.string().max(60).optional(),
       parents: z.array(z.string()).max(12), origin: z.enum(["버튼", "끌어다 놓기"]) },
     _meta: appOnly,
-  }, async ({ image, name, parents, origin }) => {
+  }, async ({ image, thumb, name, parents, origin }) => {
     const s = currentSession(code);
     if (!s) return err("먼저 디자인 콘셉트와 판단 기준을 적어 주세요.");
     const m = image.match(/^data:(image\/(png|jpeg|webp|gif));base64,(.+)$/);
@@ -312,9 +304,12 @@ function mcpFor(code) {
     db.prepare("SELECT id FROM ideas WHERE session_id=? AND status='kept'").all(s.id).forEach((r) => known.add(r.id));
     const iid = id(), t = now();
     db.prepare("INSERT INTO images(id,code,mime,data,created_at) VALUES(?,?,?,?,?)").run(iid, code, m[1], Buffer.from(m[3], "base64"), t);
+    const tm = thumb && thumb.match(/^data:(image\/(png|jpeg|webp));base64,(.+)$/);
+    const tid = tm ? id() : null;
+    if (tm) db.prepare("INSERT INTO images(id,code,mime,data,created_at) VALUES(?,?,?,?,?)").run(tid, code, tm[1], Buffer.from(tm[3], "base64"), t);
     const nid = id();
-    db.prepare("INSERT INTO nodes(id,session_id,letter,name,image_id,parents,origin,author,created_at) VALUES(?,?,?,?,?,?,?,?,?)")
-      .run(nid, s.id, letterFor(count), (name || "").trim() || null, iid, JSON.stringify(parents.filter((p) => known.has(p))), origin, "student", t);
+    db.prepare("INSERT INTO nodes(id,session_id,letter,name,image_id,thumb_id,parents,origin,author,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+      .run(nid, s.id, letterFor(count), (name || "").trim() || null, iid, tid, JSON.stringify(parents.filter((p) => known.has(p))), origin, "student", t);
     logEvent(code, s.id, "focus", { node_id: nid });
     return ok(`${letterFor(count)}를 올렸습니다.`);
   });
