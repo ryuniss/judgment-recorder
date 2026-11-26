@@ -43,3 +43,5 @@ CREATE TABLE IF NOT EXISTS ideas (
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL, num INTEGER NOT NULL, text_relayed TEXT NOT NULL, text_final TEXT,
   related TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL CHECK(status IN ('proposed','kept','dismissed')),
   created_at TEXT NOT NULL, resolved_at TEXT);
+-- 학생이 캔버스에서 직접 옮긴 위치(옮긴 항목만). 자동 정렬로 되돌리면 지운다.
+CREATE TABLE IF NOT EXISTS positions (item_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, updated_at TEXT NOT NULL);

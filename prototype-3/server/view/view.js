@@ -52,7 +52,7 @@ function toast(t) {
 }
 // 캔버스 항목 = 이미지 노드 + (지우지 않은) 아이디어 메모
 const ideaItems = () => (S?.ideas || []).filter((i) => i.status !== "dismissed")
-  .map((i) => ({ ...i, kind: "idea", letter: i.label, parents: i.related, text: i.text_final ?? i.text_relayed }));
+  .map((i) => ({ ...i, kind: "idea", memo: i.kind === "summary" ? "summary" : "idea", letter: i.label, parents: i.related, text: i.text_final ?? i.text_relayed }));
 const items = () => [...(S?.nodes || []), ...ideaItems()];
 const nodeById = (id) => items().find((n) => n.id === id);
 const curCrit = () => S?.current_criteria?.length ? S.current_criteria : (S?.current_criterion ? [{ ...S.current_criterion, rank: 1 }] : []);
@@ -71,19 +71,30 @@ function summary() {
 }
 
 // ---------- 배치 ----------
+// 가로: 출처 깊이(열). 세로: 같은 열 안에서 출처 이미지 가까이(갈래끼리 모이게). 학생이 옮긴 항목은 그 자리에 고정.
 function layout() {
   const depth = {}, out = {};
   const d = (n) => depth[n.id] ??= n.parents.length ? 1 + Math.max(...n.parents.map((p) => (nodeById(p) ? d(nodeById(p)) : -1))) : 0;
   const all = items().sort((a, b) => a.created_at.localeCompare(b.created_at));
   all.forEach(d);
-  const colY = {};
-  for (const n of all) {
-    const c = depth[n.id], x = PAD + c * COL, y = PAD + (colY[c] ?? 0);
-    const small = n.judgment?.label === "제외";
-    const h = n.kind === "idea" ? 112 : small ? X_H : NODE_H;
-    out[n.id] = { x, y, w: small ? 120 : NODE_W, h };
-    colY[c] = (colY[c] ?? 0) + h + ROW;
+  const size = (n) => { const small = n.judgment?.label === "제외"; return { w: small ? 120 : NODE_W, h: n.kind === "idea" ? 112 : small ? X_H : NODE_H }; };
+  const cols = Math.max(0, ...all.map((n) => depth[n.id]));
+  for (let c = 0; c <= cols; c++) {
+    const col = all.filter((n) => depth[n.id] === c).map((n) => {
+      const ps = n.parents.map((p) => out[p]).filter(Boolean);
+      return { n, want: ps.length ? ps.reduce((a, p) => a + p.y + p.h / 2, 0) / ps.length : null };
+    });
+    // 출처 위치 순으로, 출처가 같으면 올린 순으로
+    col.sort((a, b) => (a.want ?? 1e9) - (b.want ?? 1e9) || a.n.created_at.localeCompare(b.n.created_at));
+    let next = PAD;
+    for (const { n, want } of col) {
+      const { w, h } = size(n);
+      const y = Math.max(next, want != null ? want - h / 2 : next);
+      out[n.id] = { x: PAD + c * COL, y, w, h };
+      next = y + h + ROW;
+    }
   }
+  for (const n of all) { const p = S.positions?.[n.id]; if (p && out[n.id]) Object.assign(out[n.id], { x: p.x, y: p.y, pinned: true }); }
   const W = Math.max(...Object.values(out).map((p) => p.x + p.w), 400) + PAD;
   const H = Math.max(...Object.values(out).map((p) => p.y + p.h), 300) + PAD;
   return { pos: out, W, H };
@@ -108,10 +119,11 @@ function render() {
     ${showMore ? `<div class="more">${curCrit().filter((c) => (c.rank ?? 1) > 1).map((c) => `<p><span class="k">${c.rank}순위</span> ${esc(c.text)}</p>`).join("")}</div>` : ""}
     ${prop ? `<div class="prop"><span class="tag">정리 제안 · 확인 전</span><span class="t">${esc(prop.text)}</span>
       <button class="sec" data-act="prop-ok">확인하고 기록</button><button class="ghost" data-act="prop-no">넘기기</button></div>` : ""}
-    <div class="tools"><span class="cnt">이미지 ${n}개${nm ? ` · 메모 ${nm}개` : ""}</span>
+    <div class="tools"><span class="cnt">이미지 ${n}개${nm ? ` · 메모·정리 ${nm}개` : ""}</span>
       <span class="hint">AI로 만든 결과는 버튼으로 올리거나 캔버스에 끌어다 놓아요</span>
       <div class="zoom"><button data-act="zout" aria-label="축소">−</button><span>${Math.round(scale * 100)}%</span><button data-act="zin" aria-label="확대">+</button></div>
       <button class="sec" data-act="fit">한눈에 보기</button>
+      ${Object.keys(S.positions || {}).length ? `<button class="ghost" data-act="relayout">자동 정렬</button>` : ""}
       <button class="primary" data-act="upload">이미지 올리기</button></div>
   </div>
   <div class="body">
@@ -132,7 +144,7 @@ function render() {
 }
 
 function nodeHtml(nd, p, focus) {
-  if (nd.kind === "idea") return `<button class="node idea ${nd.status === "proposed" ? "pending" : ""} ${sel === nd.id ? "sel" : ""}" data-node="${nd.id}"
+  if (nd.kind === "idea") return `<button class="node idea ${nd.memo} ${nd.status === "proposed" ? "pending" : ""} ${sel === nd.id ? "sel" : ""}" data-node="${nd.id}"
     style="left:${p.x}px;top:${p.y}px" aria-label="${esc(nd.letter)}, ${nd.status === "kept" ? "남김" : "확인 전"}">
     <span class="nm"><span class="lt">${esc(nd.letter)}</span></span><span class="it">${esc(nd.text)}</span>
     <span class="lb ${nd.status === "kept" ? "" : "none"}">${nd.status === "kept" ? "남김" : "확인 전"}</span></button>`;
@@ -167,21 +179,31 @@ function panelHtml(nd) {
 }
 
 function ideaPanelHtml(i) {
-  const pending = i.status === "proposed";
-  const rel = new Set(i.related);
+  const pending = i.status === "proposed", sum = i.memo === "summary";
+  const rel = new Set(i.related); if (i.about === "concept") rel.add("concept");
   return `<aside class="panel" aria-label="${esc(i.letter)}">
-    <h2><span class="lt" style="display:inline-flex;align-items:center;justify-content:center;padding:0 6px;height:24px;border-radius:5px;background:#111;color:#fff;font-size:12px">${esc(i.letter)}</span>아이디어 메모
+    <h2><span class="lt" style="display:inline-flex;align-items:center;justify-content:center;padding:0 6px;height:24px;border-radius:5px;background:#111;color:#fff;font-size:12px">${esc(i.letter)}</span>${sum ? "대화 정리" : "아이디어 메모"}
       <button class="close" data-act="close" aria-label="닫기">×</button></h2>
-    ${pending ? `<p class="note">대화에서 AI가 옮겨 적은 말이에요. 내 생각과 맞게 고쳐서 남기거나, 아니면 지워 주세요.</p>
-      <label class="f">메모<textarea id="itext" rows="4">${esc(i.text_relayed)}</textarea></label>
-      <div><p style="font-weight:700;font-size:14px;margin-bottom:6px">어떤 이미지에서 나온 생각인가요? <span class="mut" style="font-weight:400">없으면 비워 둬요</span></p>
-        <div class="srcs">${S.nodes.map((n) => `<button type="button" class="src" data-rel="${n.id}" aria-pressed="${rel.has(n.id)}">${n.image_url ? `<img src="${esc(n.image_url)}" alt="">` : ""}${esc(tagOf(n))}</button>`).join("") || `<span class="mut">아직 이미지가 없어요.</span>`}</div></div>
+    ${pending ? `<p class="note">${sum ? "대화에서 AI가 정리한 내용이에요. 내 생각과 맞게 고쳐서 남기거나, 아니면 지워 주세요." : "대화에서 AI가 옮겨 적은 말이에요. 내 생각과 맞게 고쳐서 남기거나, 아니면 지워 주세요."}</p>
+      <label class="f">${sum ? "정리" : "메모"}<textarea id="itext" rows="4">${esc(i.text_relayed)}</textarea></label>
+      <div><p style="font-weight:700;font-size:14px;margin-bottom:6px">${sum ? "무엇에 관한 정리인가요?" : "어떤 이미지에서 나온 생각인가요?"} <span class="mut" style="font-weight:400">없으면 비워 둬요</span></p>
+        <div class="srcs"><button type="button" class="src" data-rel="concept" aria-pressed="${rel.has("concept")}">콘셉트</button>${S.nodes.map((n) => `<button type="button" class="src" data-rel="${n.id}" aria-pressed="${rel.has(n.id)}">${n.image_url ? `<img src="${esc(n.image_url)}" alt="">` : ""}${esc(tagOf(n))}</button>`).join("") || `<span class="mut">아직 이미지가 없어요.</span>`}</div></div>
       <div class="row"><button class="primary" id="keep">남기기</button><button class="sec" id="drop">지우기</button></div>`
     : `<p style="font-size:15px;line-height:1.6">${esc(i.text_final ?? i.text_relayed)}</p>
-      ${i.text_final && i.text_final !== i.text_relayed ? `<p class="mut">처음 옮겨진 말: "${esc(i.text_relayed)}"</p>` : ""}
-      <p class="mut">관련 이미지: ${i.related.map((r) => nodeById(r)?.letter).filter(Boolean).join(" + ") || "없음"}</p>
-      <button class="sec" data-act="child">이 메모에서 이어서 이미지 올리기</button>`}
+      ${i.text_final && i.text_final !== i.text_relayed ? `<p class="mut">${sum ? "AI가 처음 정리한 문장" : "처음 옮겨진 말"}: "${esc(i.text_relayed)}"</p>` : ""}
+      ${i.text_final && i.text_final !== i.text_relayed ? "" : `<p class="mut">${sum ? "AI가 정리한 문장 그대로 남겼어요." : ""}</p>`}
+      <p class="mut">관련: ${[i.about === "concept" ? "콘셉트" : null, ...i.related.map((r) => nodeById(r)?.letter)].filter(Boolean).join(" + ") || "없음"}</p>
+      <button class="sec" data-act="child">여기서 이어서 이미지 올리기</button>`}
   </aside>`;
+}
+
+// 메모·정리를 관련 대상(콘셉트, 이미지별, 연결 없음)으로 묶어 보여 준다
+function groups(memos) {
+  const line = (i) => `<li><button class="ghost" data-go="${i.id}">${esc(i.letter)}</button> ${esc(i.text)}${i.status === "proposed" ? ' <span class="mut">(확인 전)</span>' : ""}</li>`;
+  const sec = (title, arr) => arr.length ? `<p class="mut" style="font-weight:700;margin-top:8px">${title}</p><ul class="hist" style="font-size:14px;color:#111">${arr.map(line).join("")}</ul>` : "";
+  return sec("콘셉트", memos.filter((i) => i.about === "concept"))
+    + S.nodes.map((n) => sec(esc(tagOf(n)), memos.filter((i) => i.related.includes(n.id)))).join("")
+    + sec("연결 없음", memos.filter((i) => i.about !== "concept" && !i.related.some((r) => S.nodes.some((n) => n.id === r))));
 }
 
 function renderWrap() {
@@ -195,8 +217,8 @@ function renderWrap() {
       <ol class="tl">${crit.map((c) => `<li><span class="tg">${c.rank ?? 1}순위 · ${esc(c.change_type)}</span><span class="mut">${esc(c.created_at.slice(5, 16).replace("T", " "))}</span><p>${esc(c.text)}</p></li>`).join("")}</ol></div>
     <div><h2 style="font-size:14px;margin:0 0 8px">판단 전 ${by(null).length}개 <span class="mut" style="font-weight:400">눌러서 지금 판단하거나, 그대로 두어도 돼요</span></h2>${list(by(null))}</div>
     ${["선택", "보류", "아직 모르겠어요", "제외"].map((lb) => `<div><h2 style="font-size:14px;margin:0 0 8px">${lb} ${by(lb).length}개</h2>${list(by(lb))}</div>`).join("")}
-    <div><h2 style="font-size:14px;margin:0 0 8px">남긴 아이디어 ${kept.length}개${pend.length ? ` · 확인 전 ${pend.length}개` : ""}</h2>
-      ${kept.length || pend.length ? `<ul class="hist" style="font-size:14px;color:#111">${[...kept, ...pend].map((i) => `<li><button class="ghost" data-go="${i.id}">${esc(i.letter)}</button> ${esc(i.text)}${i.status === "proposed" ? ' <span class="mut">(확인 전)</span>' : ""}</li>`).join("")}</ul>` : `<p class="mut">없음</p>`}</div>
+    <div><h2 style="font-size:14px;margin:0 0 8px">메모·대화 정리 ${kept.length}개 남김${pend.length ? ` · 확인 전 ${pend.length}개` : ""}</h2>
+      ${kept.length || pend.length ? groups([...kept, ...pend]) : `<p class="mut">없음</p>`}</div>
     <button class="primary" data-act="back">캔버스로 돌아가기</button></div>`;
   root.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => { sel = b.dataset.go; mode = "canvas"; render(); }));
   root.querySelector('[data-act="back"]').onclick = () => { mode = "canvas"; render(); };
@@ -230,7 +252,10 @@ function renderStart() {
 
 // ---------- 이벤트 ----------
 function bind() {
-  root.querySelectorAll("[data-node]").forEach((b) => (b.onclick = () => { sel = b.dataset.node; render(); }));
+  root.querySelectorAll("[data-node]").forEach((b) => {
+    b.onclick = () => { if (dragged) { dragged = false; return; } sel = b.dataset.node; render(); };
+    b.onpointerdown = (e) => startDrag(e, b);
+  });
   const act = (k, f) => root.querySelectorAll(`[data-act="${k}"]`).forEach((b) => (b.onclick = f));
   act("close", () => { sel = null; render(); });
   act("upload", () => pickFile(S.focus_node_id ? [S.focus_node_id] : []));
@@ -241,6 +266,7 @@ function bind() {
   act("full", async () => { try { const r = await app.requestDisplayMode({ mode: "fullscreen" }); hostMode = r?.mode || hostMode; render(); } catch {} });
   act("crit", () => openCriterion());
   act("new", () => { mode = "start"; render(); });
+  act("relayout", async () => { try { S = await call("app_reset_positions"); } catch (e) { return toast(e.message); } render(); });
   act("more", () => { showMore = !showMore; render(); });
   act("wrap", () => { mode = "wrap"; render(); call("app_event", { type: "wrap_view" }).catch(() => {}); });
   act("prop-ok", () => openCriterion(S.proposal));
@@ -257,7 +283,7 @@ function bind() {
     ip.querySelectorAll("[data-rel]").forEach((b) => (b.onclick = () => { const k = b.dataset.rel; rel.has(k) ? rel.delete(k) : rel.add(k); b.setAttribute("aria-pressed", rel.has(k)); }));
     const done = async (keep) => {
       const text = ip.querySelector("#itext").value;
-      try { S = await call("app_resolve_idea", { idea_id: i.id, keep, text, related: [...rel] }); } catch (e) { return toast(e.message); }
+      try { S = await call("app_resolve_idea", { idea_id: i.id, keep, text, related: [...rel].filter((r) => r !== "concept"), concept: rel.has("concept") }); } catch (e) { return toast(e.message); }
       if (!keep) sel = null;
       await tellModel(`${summary()}\n학생이 ${i.letter}를 ${keep ? `남겼습니다: "${text.trim()}"` : "지웠습니다"}.`);
       toast(keep ? `${i.letter}를 남겼어요` : `${i.letter}를 지웠어요`); render();
@@ -293,6 +319,30 @@ function bind() {
   bindDrop();
   const vp = root.querySelector("#vp");
   if (vp) vp.onclick = (e) => { if (e.target === vp || e.target.classList.contains("stage")) { if (sel) { sel = null; render(); } } };
+}
+
+// 끌어 옮기기: 4px 이상 움직이면 옮기기로 보고, 놓을 때 위치를 저장한다(클릭은 그대로 선택)
+let dragged = false;
+function startDrag(e, el) {
+  if (e.button !== 0) return;
+  const id = el.dataset.node, x0 = e.clientX, y0 = e.clientY, left0 = el.offsetLeft, top0 = el.offsetTop;
+  let moving = false;
+  const move = (ev) => {
+    const dx = (ev.clientX - x0) / scale, dy = (ev.clientY - y0) / scale;
+    if (!moving && Math.hypot(dx, dy) * scale < 4) return;
+    moving = true; el.classList.add("dragging");
+    el.style.left = Math.max(0, left0 + dx) + "px"; el.style.top = Math.max(0, top0 + dy) + "px";
+  };
+  const up = async () => {
+    window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+    if (!moving) return;
+    dragged = true; setTimeout(() => (dragged = false), 0); el.classList.remove("dragging");
+    const x = el.offsetLeft, y = el.offsetTop;
+    S.positions = { ...(S.positions || {}), [id]: { x, y } };
+    render();
+    try { await call("app_set_position", { item_id: id, x, y }); } catch (err) { toast(err.message); }
+  };
+  window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
 }
 
 function setScale(v) { scale = Math.min(1.6, Math.max(0.3, Math.round(v * 100) / 100)); render(); }
@@ -480,7 +530,9 @@ function DEMO() {
       { id: "c2", rank: 2, change_type: "처음", status: "confirmed", text: "책상 위가 고르게 밝을 것", created_at: t + "00:00" }],
     proposal: { id: "p1", text: "광원이 직접 보이지 않을 것", status: "proposed" },
     focus_node_id: "n3",
+    positions: {},
     ideas: [
+      { id: "s1", num: 1, label: "정리1", kind: "summary", about: null, text_relayed: "벽 반사는 광원이 안 보이지만, 벽 색에 따라 밝기가 크게 달라진다", text_final: null, related: ["n3"], status: "proposed", created_at: t + "16" },
       { id: "i1", num: 1, label: "메모1", text_relayed: "빛이 벽을 타고 내려오면 책상 전체가 은은해질 것 같아", text_final: null, related: ["n3"], status: "proposed", created_at: t + "14" },
       { id: "i2", num: 2, label: "메모2", text_relayed: "갓 안쪽을 천으로 감싸면?", text_final: "갓 안쪽을 천으로 감싸 빛을 한 번 거르기", related: ["n2"], status: "kept", created_at: t + "08" },
     ],
@@ -503,7 +555,9 @@ function demoCall(name, a) {
     if (!a.dismiss) { const r = a.rank ?? 1; S.criteria.push({ id: "c" + T, rank: r, change_type: a.change_type, status: "confirmed", text: a.text, created_at: T });
       S.current_criteria = [...S.current_criteria.filter((c) => c.rank !== r), { text: a.text, rank: r }].sort((x, y) => x.rank - y.rank); S.current_criterion = S.current_criteria.find((c) => c.rank === 1); }
   }
-  if (name === "app_resolve_idea") { const i = S.ideas.find((x) => x.id === a.idea_id); i.status = a.keep ? "kept" : "dismissed"; i.text_final = a.keep ? (a.text?.trim() || i.text_relayed) : null; if (a.related) i.related = a.related; }
+  if (name === "app_resolve_idea") { const i = S.ideas.find((x) => x.id === a.idea_id); i.status = a.keep ? "kept" : "dismissed"; i.text_final = a.keep ? (a.text?.trim() || i.text_relayed) : null; if (a.related) i.related = a.related; i.about = a.concept ? "concept" : null; }
+  if (name === "app_set_position") S.positions[a.item_id] = { x: a.x, y: a.y };
+  if (name === "app_reset_positions") S.positions = {};
   if (name === "app_event" && a.type === "focus") S.focus_node_id = a.node_id;
   if (name === "app_config") return { q6 };
   return S;

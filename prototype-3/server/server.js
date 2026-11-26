@@ -23,7 +23,8 @@ const db = new DatabaseSync(DB_PATH);
 db.exec("PRAGMA journal_mode = WAL");
 db.exec(fs.readFileSync(path.join(DIR, "schema.sql"), "utf8"));
 // 추가 열: 기준 순위(1·2·3), 콘셉트와의 연결(학생 작성)
-for (const sql of ["ALTER TABLE criteria ADD COLUMN rank INTEGER NOT NULL DEFAULT 1", "ALTER TABLE criteria ADD COLUMN basis TEXT", "ALTER TABLE nodes ADD COLUMN thumb_id TEXT"]) { try { db.exec(sql); } catch { /* 이미 있음 */ } }
+for (const sql of ["ALTER TABLE criteria ADD COLUMN rank INTEGER NOT NULL DEFAULT 1", "ALTER TABLE criteria ADD COLUMN basis TEXT", "ALTER TABLE nodes ADD COLUMN thumb_id TEXT",
+  "ALTER TABLE ideas ADD COLUMN kind TEXT NOT NULL DEFAULT 'idea'", "ALTER TABLE ideas ADD COLUMN about TEXT"]) { try { db.exec(sql); } catch { /* 이미 있음 */ } }
 
 const id = () => crypto.randomBytes(8).toString("hex");
 const now = () => new Date().toISOString();
@@ -54,8 +55,9 @@ function state(code, { rawLimit = 12 } = {}) {
   });
   const focus = db.prepare("SELECT payload FROM events WHERE session_id=? AND type='focus' ORDER BY created_at DESC LIMIT 1").get(sid);
   const ideas = db.prepare("SELECT * FROM ideas WHERE session_id=? ORDER BY num").all(sid)
-    .map((i) => ({ ...i, related: JSON.parse(i.related || "[]"), label: `메모${i.num}` }));
-  return { session, criteria, nodes, ideas,
+    .map((i) => ({ ...i, related: JSON.parse(i.related || "[]"), label: `${i.kind === "summary" ? "정리" : "메모"}${i.num}` }));
+  const positions = Object.fromEntries(db.prepare("SELECT item_id, x, y FROM positions WHERE session_id=?").all(sid).map((p) => [p.item_id, { x: p.x, y: p.y }]));
+  return { session, criteria, nodes, ideas, positions,
     current_criterion: criteria.filter((c) => c.status === "confirmed" && (c.rank ?? 1) === 1).at(-1) || null,
     current_criteria: [1, 2, 3].map((r) => criteria.filter((c) => c.status === "confirmed" && (c.rank ?? 1) === r).at(-1)).filter((c) => c && c.text),
     proposal: criteria.filter((c) => c.status === "proposed").at(-1) || null,
@@ -74,7 +76,7 @@ function summaryText(s) {
   }
   for (const i of s.ideas.filter((x) => x.status !== "dismissed")) {
     const rel = i.related.map((r) => s.nodes.find((n) => n.id === r)?.letter).filter(Boolean).join("+");
-    lines.push(`${i.label}${rel ? ` (← ${rel})` : ""}: ${i.status === "kept" ? `"${i.text_final ?? i.text_relayed}" (학생이 남김)` : `"${i.text_relayed}" (확인 전)`}`);
+    lines.push(`${i.label}${rel ? ` (← ${rel})` : i.about === "concept" ? " (콘셉트)" : ""}: ${i.status === "kept" ? `"${i.text_final ?? i.text_relayed}" (학생이 남김)` : `"${i.text_relayed}" (확인 전)`}`);
   }
   if (s.focus_node_id) lines.push(`지금 이야기 중인 이미지: ${s.nodes.find((n) => n.id === s.focus_node_id)?.letter ?? "-"}`);
   if (s.proposal) lines.push(`확인 전 정리 제안(AI 작성, 아직 기준 아님): ${s.proposal.text}`);
@@ -89,7 +91,7 @@ const logEvent = (code, sid, type, payload) =>
 
 // ---------- MCP 서버 (참여 코드별) ----------
 // 화면을 바꿀 때마다 주소의 버전을 올린다(호스트가 이전 화면을 캐시해 두는 경우 대비)
-const VIEW_URI = "ui://judgment/canvas-v6.html";
+const VIEW_URI = "ui://judgment/canvas-v7.html";
 function buildViewHtml() {
   const bundle = fs.readFileSync(path.join(DIR, "node_modules/@modelcontextprotocol/ext-apps/dist/src/app-with-deps.js"), "utf8");
   const m = bundle.match(/export\{([^}]*)\};?\s*$/);
@@ -105,7 +107,8 @@ const RULES = `판단 기록 캔버스 규칙:
 - 대화를 시작하면 먼저 open_canvas(새 주제면 new_exploration=true). 학생이 콘셉트·판단 기준을 적기 전에는 이미지·아이디어를 만들지 않고, 기준 예시도 주지 않는다.
 - 판단(선택·보류·제외·아직 모르겠어요)·이유·기준은 학생이 캔버스에서 정한다. 대신 정하거나 우열을 평가하거나 바꾸라고 권하지 않는다. 비교를 물으면 지금 기준을 짚고 학생 생각을 먼저 묻는다.
 - 이미지는 알파벳(A, B…)으로 가리킨다. 학생이 이미지 내용을 물으면 view_image로 본다. 이 대화에서 이미 본 이미지는 다시 부르지 않는다.
-- 말로 낸 새 아이디어 → note_idea(학생 말 그대로). "이걸로 갈게"·"아까 A가 나았어" → open_judgment. "기준 바꿀래" → open_criterion. 학생이 말하지 않았는데 기준이 바뀐 듯하면 propose_criterion(제안만). "오늘은 여기까지" → end_session.${RECORD_TURNS ? "\n- 매 응답 끝에 record_turn(학생 메시지와 내 답을 그대로) 한 번." : ""}`;
+- 말로 낸 새 아이디어 → note_idea(학생 말 그대로). "이걸로 갈게"·"아까 A가 나았어" → open_judgment. "기준 바꿀래" → open_criterion. 학생이 말하지 않았는데 기준이 바뀐 듯하면 propose_criterion(제안만). "오늘은 여기까지" → end_session.
+- 학생이 "정리해 줘"라고 하거나 끝낼 때, 대화에서 나온 결론만 note_summary로 짧게 올린다(관련 이미지 연결). 학생이 확인하기 전엔 학생 판단이 아니다. 매 대화마다 올리지 않는다.${RECORD_TURNS ? "\n- 매 응답 끝에 record_turn(학생 메시지와 내 답을 그대로) 한 번." : ""}`;
 
 function mcpFor(code) {
   const server = new McpServer({ name: "judgment-recorder-3", version: "0.2.0" }, { instructions: RULES });
@@ -161,10 +164,24 @@ function mcpFor(code) {
     const s = currentSession(code);
     if (!s) return err("아직 1순위 기준이 없습니다. open_canvas를 불러 학생이 기준부터 적게 하세요.");
     const ids = related.map((l) => findNode(s.id, l)?.id).filter(Boolean);
-    const num = (db.prepare("SELECT max(num) m FROM ideas WHERE session_id=?").get(s.id)?.m ?? 0) + 1;
-    db.prepare("INSERT INTO ideas(id,session_id,num,text_relayed,related,status,created_at) VALUES(?,?,?,?,?,?,?)")
-      .run(id(), s.id, num, student_words, JSON.stringify(ids), "proposed", now());
+    const num = (db.prepare("SELECT max(num) m FROM ideas WHERE session_id=? AND kind='idea'").get(s.id)?.m ?? 0) + 1;
+    db.prepare("INSERT INTO ideas(id,session_id,num,text_relayed,related,status,created_at,kind) VALUES(?,?,?,?,?,?,?,?)")
+      .run(id(), s.id, num, student_words, JSON.stringify(ids), "proposed", now(), "idea");
     return { content: [{ type: "text", text: `캔버스에 '메모${num} · 확인 전'으로 올렸습니다. 학생이 남길지 정할 때까지 아이디어를 평가하거나 발전시키지 마세요.` }] };
+  });
+
+  server.registerTool("note_summary", {
+    title: "대화 정리",
+    description: "학생이 정리해 달라고 하거나 끝낼 때, 대화에서 나온 결론을 캔버스에 '정리 · 확인 전'으로 올린다. text는 한두 문장, related는 관련 이미지 알파벳, concept=true면 콘셉트에 관한 정리. 학생이 고쳐 남기거나 지운다.",
+    inputSchema: { text: z.string().max(600), related: z.array(z.string().max(4)).max(8).optional(), concept: z.boolean().optional() },
+  }, async ({ text, related = [], concept }) => {
+    const s = currentSession(code);
+    if (!s) return err("탐색이 아직 시작되지 않았습니다.");
+    const ids = related.map((l) => findNode(s.id, l)?.id).filter(Boolean);
+    const num = (db.prepare("SELECT max(num) m FROM ideas WHERE session_id=? AND kind='summary'").get(s.id)?.m ?? 0) + 1;
+    db.prepare("INSERT INTO ideas(id,session_id,num,text_relayed,related,status,created_at,kind,about) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(id(), s.id, num, text, JSON.stringify(ids), "proposed", now(), "summary", concept ? "concept" : null);
+    return { content: [{ type: "text", text: `'정리${num} · 확인 전'으로 올렸습니다.` }] };
   });
 
   registerAppTool(server, "open_judgment", {
@@ -201,16 +218,17 @@ function mcpFor(code) {
 
   registerAppTool(server, "app_resolve_idea", {
     description: "학생이 아이디어 메모를 남기거나(고친 문장 포함) 지움",
-    inputSchema: { idea_id: z.string(), keep: z.boolean(), text: z.string().max(2000).optional(), related: z.array(z.string()).max(12).optional() },
+    inputSchema: { idea_id: z.string(), keep: z.boolean(), text: z.string().max(2000).optional(), related: z.array(z.string()).max(12).optional(), concept: z.boolean().optional() },
     _meta: appOnly,
-  }, async ({ idea_id, keep, text, related }) => {
+  }, async ({ idea_id, keep, text, related, concept }) => {
     const s = currentSession(code);
     const row = s && db.prepare("SELECT * FROM ideas WHERE id=? AND session_id=?").get(idea_id, s.id);
     if (!row) return err("메모를 찾지 못했어요.");
     const known = new Set(db.prepare("SELECT id FROM nodes WHERE session_id=?").all(s.id).map((r) => r.id));
-    db.prepare("UPDATE ideas SET status=?, text_final=?, related=?, resolved_at=? WHERE id=?")
+    db.prepare("UPDATE ideas SET status=?, text_final=?, related=?, about=?, resolved_at=? WHERE id=?")
       .run(keep ? "kept" : "dismissed", keep ? ((text || "").trim() || row.text_relayed) : null,
-        related ? JSON.stringify(related.filter((r) => known.has(r))) : row.related, now(), idea_id);
+        related ? JSON.stringify(related.filter((r) => known.has(r))) : row.related,
+        concept === undefined ? row.about : concept ? "concept" : null, now(), idea_id);
     return ok(keep ? "남겼습니다." : "지웠습니다.");
   });
 
@@ -343,6 +361,27 @@ function mcpFor(code) {
     db.prepare("INSERT INTO criteria(id,session_id,text,change_type,prev_id,status,author,created_at,rank,basis) VALUES(?,?,?,?,?,?,?,?,?,?)")
       .run(id(), s.id, text.trim(), change_type, cur?.id ?? null, "confirmed", proposal_id ? "student(제안 확인)" : "student", t, rank, (basis || "").trim() || null);
     return ok("기준을 기록했습니다.");
+  });
+
+  registerAppTool(server, "app_set_position", {
+    description: "학생이 캔버스에서 옮긴 위치 저장",
+    inputSchema: { item_id: z.string(), x: z.number().min(-5000).max(50000), y: z.number().min(-5000).max(50000) },
+    _meta: appOnly,
+  }, async ({ item_id, x, y }) => {
+    const s = currentSession(code);
+    if (!s) return err("탐색이 아직 시작되지 않았습니다.");
+    const ok1 = db.prepare("SELECT 1 FROM nodes WHERE id=? AND session_id=? UNION SELECT 1 FROM ideas WHERE id=? AND session_id=?").get(item_id, s.id, item_id, s.id);
+    if (!ok1) return err("항목을 찾지 못했어요.");
+    db.prepare("INSERT INTO positions(item_id,session_id,x,y,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET x=excluded.x, y=excluded.y, updated_at=excluded.updated_at")
+      .run(item_id, s.id, Math.round(x), Math.round(y), now());
+    logEvent(code, s.id, "move", { item_id, x: Math.round(x), y: Math.round(y) });
+    return { content: [{ type: "text", text: "ok" }] };
+  });
+
+  registerAppTool(server, "app_reset_positions", { description: "옮긴 위치를 지우고 자동 정렬로", inputSchema: {}, _meta: appOnly }, async () => {
+    const s = currentSession(code);
+    if (s) { db.prepare("DELETE FROM positions WHERE session_id=?").run(s.id); logEvent(code, s.id, "reset_positions", {}); }
+    return ok("자동 정렬로 되돌렸습니다.");
   });
 
   registerAppTool(server, "app_event", {
@@ -648,7 +687,7 @@ app.get("/admin/identities", admin, (_q, res) => res.json(db.prepare("SELECT pro
 app.get("/admin/export", admin, (_q, res) => {
   const t = (n) => db.prepare(`SELECT * FROM ${n}`).all();
   res.json({ exported_at: now(), participants: t("participants"), sessions: t("sessions"), raw: t("raw"),
-    criteria: t("criteria"), nodes: t("nodes"), ideas: t("ideas"), node_judgments: t("node_judgments"), relayed_turns: t("relayed_turns"),
+    criteria: t("criteria"), nodes: t("nodes"), ideas: t("ideas"), positions: t("positions"), node_judgments: t("node_judgments"), relayed_turns: t("relayed_turns"),
     events: t("events"), judgments: t("judgments"), review_triggers: t("review_triggers") });
 });
 
