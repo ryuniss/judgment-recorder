@@ -22,6 +22,8 @@ fs.mkdirSync(path.dirname(DB_PATH), { recursive: true }); // 폴더가 없으면
 const db = new DatabaseSync(DB_PATH);
 db.exec("PRAGMA journal_mode = WAL");
 db.exec(fs.readFileSync(path.join(DIR, "schema.sql"), "utf8"));
+// 추가 열: 기준 순위(1·2·3), 콘셉트와의 연결(학생 작성)
+for (const sql of ["ALTER TABLE criteria ADD COLUMN rank INTEGER NOT NULL DEFAULT 1", "ALTER TABLE criteria ADD COLUMN basis TEXT"]) { try { db.exec(sql); } catch { /* 이미 있음 */ } }
 
 const id = () => crypto.randomBytes(8).toString("hex");
 const now = () => new Date().toISOString();
@@ -56,16 +58,18 @@ function state(code, { rawLimit = 12 } = {}) {
   const ideas = db.prepare("SELECT * FROM ideas WHERE session_id=? ORDER BY num").all(sid)
     .map((i) => ({ ...i, related: JSON.parse(i.related || "[]"), label: `메모${i.num}` }));
   return { session, criteria, nodes, ideas, raw: raw.reverse(),
-    current_criterion: criteria.filter((c) => c.status === "confirmed").at(-1) || null,
+    current_criterion: criteria.filter((c) => c.status === "confirmed" && (c.rank ?? 1) === 1).at(-1) || null,
+    current_criteria: [1, 2, 3].map((r) => criteria.filter((c) => c.status === "confirmed" && (c.rank ?? 1) === r).at(-1)).filter((c) => c && c.text),
     proposal: criteria.filter((c) => c.status === "proposed").at(-1) || null,
     focus_node_id: focus ? JSON.parse(focus.payload).node_id : null };
 }
 
 // 대화 AI에게 넘기는 짧은 요약(학생이 화면에서 한 것만, 평가 없이)
 function summaryText(s) {
-  if (!s.session) return "아직 탐색이 시작되지 않았습니다. 학생이 캔버스에서 기획 의도와 1순위 기준을 직접 적을 때까지 기다리세요.";
+  if (!s.session) return "아직 탐색이 시작되지 않았습니다. 학생이 캔버스에서 디자인 콘셉트와 판단 기준을 직접 적을 때까지 기다리세요.";
   s.ideas ??= [];
-  const lines = [`1순위 기준(학생 작성): ${s.current_criterion?.text ?? "없음"}`];
+  const lines = [`디자인 콘셉트(학생 작성): ${s.session.intent ?? "-"}`,
+    ...s.current_criteria.map((c) => `${c.rank ?? 1}순위 기준(학생 작성): ${c.text}`)];
   for (const n of s.nodes) {
     const from = n.parents.map((p) => s.nodes.find((x) => x.id === p)?.letter ?? s.ideas.find((x) => x.id === p)?.label).filter(Boolean).join("+");
     lines.push(`${n.letter}${n.name ? " " + n.name : ""}${from ? ` (← ${from})` : ""}: ${n.judgment ? n.judgment.label : "판단 전"}${n.judgment ? (n.judgment.reason ? ` / 이유 "${n.judgment.reason}"` : " / 이유 미기록") : ""}`);
@@ -98,7 +102,7 @@ function buildViewHtml() {
 
 const RULES = `판단 기록 캔버스 규칙:
 - 대화가 시작되면 다른 도움보다 먼저 open_canvas를 부른다. 학생이 새 주제로 시작한다고 하면 new_exploration=true로 부른다.
-- 학생이 캔버스 시작 화면에서 기획 의도와 1순위 기준을 직접 적기 전에는 이미지를 만들거나 아이디어를 제안하지 않는다. 기준을 대신 적어 주거나 예시 기준을 제시하지도 않는다. "캔버스에서 기준부터 적어 주세요"라고만 안내한다.
+- 학생이 캔버스 시작 화면에서 디자인 콘셉트와 판단 기준을 직접 적기 전에는 이미지를 만들거나 아이디어를 제안하지 않는다. 기준을 대신 적어 주거나 예시 기준을 제시하지도 않는다. "캔버스에서 기준부터 적어 주세요"라고만 안내한다.
 - 이미지의 판단(선택·보류·제외·아직 모르겠어요), 이유, 1순위 기준은 학생이 캔버스에서 직접 정한다. 대신 정하거나, 어느 쪽이 낫다고 평가하거나, 판단을 바꾸라고 권하지 않는다.
 - 학생이 이미지에 대해 말하면 알파벳(A, B, C…)으로 가리킨다.
 - 학생이 이미지 없이 말로 새 아이디어를 꺼내면("이런 생각이 났어", "~하면 어떨까") note_idea로 학생 말을 그대로 올린다. 아이디어를 먼저 발전시키거나 다듬지 않는다.
@@ -127,7 +131,7 @@ function mcpFor(code) {
 
   registerAppTool(server, "open_canvas", {
     title: "판단 기록 캔버스 열기",
-    description: `학생이 아이데이션을 시작하거나 이어갈 때, 또는 캔버스·지금까지의 이미지를 보고 싶다고 할 때 부른다. 처음이면 학생이 기획 의도와 1순위 기준을 직접 적는 화면이 먼저 열린다.\n${RULES}`,
+    description: `학생이 아이데이션을 시작하거나 이어갈 때, 또는 캔버스·지금까지의 이미지를 보고 싶다고 할 때 부른다. 처음이면 학생이 디자인 콘셉트와 판단 기준을 직접 적는 화면이 먼저 열린다.\n${RULES}`,
     inputSchema: { new_exploration: z.boolean().optional().describe("학생이 새 주제·새 과제로 처음부터 시작한다고 말했을 때만 true") },
     _meta: { ui: { resourceUri: VIEW_URI }, "openai/outputTemplate": VIEW_URI },
   }, async ({ new_exploration } = {}) => {
@@ -135,14 +139,14 @@ function mcpFor(code) {
     const start = !s.session || !!new_exploration;
     logEvent(code, s.session?.id, "open_canvas", { new_exploration: !!new_exploration });
     const text = start
-      ? "캔버스 시작 화면을 열었습니다. 학생이 기획 의도와 1순위 기준을 직접 적을 때까지 이미지 생성이나 아이디어 제안을 하지 말고 기다리세요. 기준 예시도 주지 마세요."
+      ? "캔버스 시작 화면을 열었습니다. 학생이 디자인 콘셉트와 판단 기준을 직접 적을 때까지 이미지 생성이나 아이디어 제안을 하지 말고 기다리세요. 기준 예시도 주지 마세요."
       : `캔버스를 열었습니다(지난 탐색을 이어서).\n${summaryText(s)}`;
     return { content: [{ type: "text", text }], structuredContent: { ...s, mode: start ? "start" : "canvas" } };
   });
 
   registerAppTool(server, "open_criterion", {
     title: "기준 기록 열기",
-    description: "학생이 1순위 기준을 바꾸고 싶다, 고치고 싶다, 다시 정하고 싶다고 직접 말했을 때 부른다. 캔버스와 함께 기준 기록 창이 열리고, 학생이 변화 종류와 새 기준을 직접 적는다. student_words에는 학생이 한 말을 그대로 넣는다. 새 기준 문장을 대신 써 주거나 변화 종류를 정하지 않는다. (학생이 바꾸겠다고 하지 않았는데 기준이 달라진 것 같다고 AI가 느낄 때는 이 도구가 아니라 propose_criterion을 쓴다.)",
+    description: "학생이 판단 기준을 바꾸고 싶다, 고치고 싶다, 다시 정하고 싶다고 직접 말했을 때 부른다. 캔버스와 함께 기준 기록 창이 열리고, 학생이 변화 종류와 새 기준을 직접 적는다. student_words에는 학생이 한 말을 그대로 넣는다. 새 기준 문장을 대신 써 주거나 변화 종류를 정하지 않는다. (학생이 바꾸겠다고 하지 않았는데 기준이 달라진 것 같다고 AI가 느낄 때는 이 도구가 아니라 propose_criterion을 쓴다.)",
     inputSchema: { student_words: z.string().max(2000).optional().describe("학생이 기준을 바꾸고 싶다며 한 말, 그대로") },
     _meta: { ui: { resourceUri: VIEW_URI }, "openai/outputTemplate": VIEW_URI },
   }, async ({ student_words } = {}) => {
@@ -236,14 +240,14 @@ function mcpFor(code) {
   server.registerTool("propose_criterion", {
     title: "기준 정리 제안",
     description: "학생의 말에서 1순위 기준이 더 구체적이 되었거나 달라진 것처럼 들릴 때만 부른다. text는 학생 말을 바탕으로 한 기준 문장, basis는 근거가 된 학생 말 그대로. 이것은 '정리 제안'일 뿐이며 학생이 캔버스에서 확인하기 전까지 기준이 아니다. 변화의 종류(구체화·바뀜 등)는 학생이 고르므로 정하지 않는다.",
-    inputSchema: { text: z.string().max(1000), basis: z.string().max(2000) },
-  }, async ({ text, basis }) => {
+    inputSchema: { text: z.string().max(1000), basis: z.string().max(2000), rank: z.number().int().min(1).max(3).optional().describe("어느 순위 기준에 대한 제안인지(기본 1)") },
+  }, async ({ text, basis, rank = 1 }) => {
     const s = currentSession(code);
     if (!s) return err("탐색이 아직 시작되지 않았습니다.");
     db.prepare("UPDATE criteria SET status='superseded' WHERE session_id=? AND status='proposed'").run(s.id);
-    const cur = db.prepare("SELECT id FROM criteria WHERE session_id=? AND status='confirmed' ORDER BY created_at DESC LIMIT 1").get(s.id);
-    db.prepare("INSERT INTO criteria(id,session_id,text,change_type,prev_id,status,author,created_at) VALUES(?,?,?,?,?,?,?,?)")
-      .run(id(), s.id, text, "정리 제안", cur?.id ?? null, "proposed", "ai", now());
+    const cur = db.prepare("SELECT id FROM criteria WHERE session_id=? AND status='confirmed' AND rank=? ORDER BY created_at DESC LIMIT 1").get(s.id, rank);
+    db.prepare("INSERT INTO criteria(id,session_id,text,change_type,prev_id,status,author,created_at,rank) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(id(), s.id, text, "정리 제안", cur?.id ?? null, "proposed", "ai", now(), rank);
     logEvent(code, s.id, "proposal_basis", { basis });
     return { content: [{ type: "text", text: "정리 제안을 캔버스에 올렸습니다. 학생이 확인하기 전까지 기준으로 다루지 마세요." }] };
   });
@@ -253,14 +257,17 @@ function mcpFor(code) {
     async () => ok("ok"));
 
   registerAppTool(server, "app_save_session", {
-    description: "학생이 적은 기획 의도와 1순위 기준 저장",
-    inputSchema: { intent: z.string().max(2000), criterion: z.string().max(1000) },
+    description: "학생이 적은 디자인 콘셉트와 판단 기준(1순위 필수, 2·3순위 선택) 저장",
+    inputSchema: { intent: z.string().max(2000), criteria: z.array(z.object({ rank: z.number().int().min(1).max(3), text: z.string().max(1000), basis: z.string().max(1000).optional() })).min(1).max(3) },
     _meta: appOnly,
-  }, async ({ intent, criterion }) => {
+  }, async ({ intent, criteria }) => {
+    const first = criteria.find((c) => c.rank === 1 && c.text.trim());
+    if (!intent.trim() || !first) return err("디자인 콘셉트와 1순위 기준을 적어 주세요.");
     const sid = id(), t = now();
-    db.prepare("INSERT INTO sessions(id,code,intent,created_at) VALUES(?,?,?,?)").run(sid, code, intent, t);
-    db.prepare("INSERT INTO criteria(id,session_id,text,change_type,prev_id,status,author,created_at) VALUES(?,?,?,?,?,?,?,?)")
-      .run(id(), sid, criterion, "처음", null, "confirmed", "student", t);
+    db.prepare("INSERT INTO sessions(id,code,intent,created_at) VALUES(?,?,?,?)").run(sid, code, intent.trim(), t);
+    for (const c of criteria.filter((c) => c.text.trim()))
+      db.prepare("INSERT INTO criteria(id,session_id,text,change_type,prev_id,status,author,created_at,rank,basis) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .run(id(), sid, c.text.trim(), "처음", null, "confirmed", "student", t, c.rank, (c.basis || "").trim() || null);
     return ok("저장했습니다.");
   });
 
@@ -271,7 +278,7 @@ function mcpFor(code) {
     _meta: appOnly,
   }, async ({ image, name, parents, origin }) => {
     const s = currentSession(code);
-    if (!s) return err("먼저 기획 의도와 기준을 적어 주세요.");
+    if (!s) return err("먼저 디자인 콘셉트와 판단 기준을 적어 주세요.");
     const m = image.match(/^data:(image\/(png|jpeg|webp|gif));base64,(.+)$/);
     if (!m) return err("이미지 형식을 읽지 못했어요.");
     const known = new Set(db.prepare("SELECT id FROM nodes WHERE session_id=?").all(s.id).map((r) => r.id));
@@ -300,10 +307,10 @@ function mcpFor(code) {
 
   registerAppTool(server, "app_save_criterion", {
     description: "학생이 확인한 기준 변화 저장. 정리 제안을 넘기면 dismiss",
-    inputSchema: { change_type: z.enum(CHANGES).optional(), text: z.string().max(1000).optional(),
-      proposal_id: z.string().optional(), dismiss: z.boolean().optional() },
+    inputSchema: { change_type: z.enum(CHANGES).optional(), text: z.string().max(1000).optional(), rank: z.number().int().min(1).max(3).optional(),
+      basis: z.string().max(1000).optional(), proposal_id: z.string().optional(), dismiss: z.boolean().optional() },
     _meta: appOnly,
-  }, async ({ change_type, text, proposal_id, dismiss }) => {
+  }, async ({ change_type, text, rank = 1, basis, proposal_id, dismiss }) => {
     const s = currentSession(code);
     if (!s) return err("탐색이 아직 시작되지 않았습니다.");
     const t = now();
@@ -311,9 +318,9 @@ function mcpFor(code) {
       .run(dismiss ? "dismissed" : "accepted", proposal_id, s.id);
     if (dismiss) return ok("넘겼습니다.");
     if (!change_type || !(text || "").trim()) return err("변화 종류와 기준 문장이 필요해요.");
-    const cur = db.prepare("SELECT id FROM criteria WHERE session_id=? AND status='confirmed' ORDER BY created_at DESC LIMIT 1").get(s.id);
-    db.prepare("INSERT INTO criteria(id,session_id,text,change_type,prev_id,status,author,created_at) VALUES(?,?,?,?,?,?,?,?)")
-      .run(id(), s.id, text.trim(), change_type, cur?.id ?? null, "confirmed", proposal_id ? "student(제안 확인)" : "student", t);
+    const cur = db.prepare("SELECT id FROM criteria WHERE session_id=? AND status='confirmed' AND rank=? ORDER BY created_at DESC LIMIT 1").get(s.id, rank);
+    db.prepare("INSERT INTO criteria(id,session_id,text,change_type,prev_id,status,author,created_at,rank,basis) VALUES(?,?,?,?,?,?,?,?,?,?)")
+      .run(id(), s.id, text.trim(), change_type, cur?.id ?? null, "confirmed", proposal_id ? "student(제안 확인)" : "student", t, rank, (basis || "").trim() || null);
     return ok("기준을 기록했습니다.");
   });
 
