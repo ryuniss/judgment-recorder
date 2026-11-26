@@ -199,7 +199,8 @@ function ideaPanelHtml(i) {
 
 // 메모·정리를 관련 대상(콘셉트, 이미지별, 연결 없음)으로 묶어 보여 준다
 function groups(memos) {
-  const line = (i) => `<li><button class="ghost" data-go="${i.id}">${esc(i.letter)}</button> ${esc(i.text)}${i.status === "proposed" ? ' <span class="mut">(확인 전)</span>' : ""}</li>`;
+  const line = (i) => `<li><button class="ghost" data-go="${i.id}">${esc(i.letter)}</button> ${esc(i.text)}${i.status === "proposed"
+    ? ` <span class="mut">(확인 전)</span> <button class="sec mini" data-keep="${i.id}">남기기</button> <button class="ghost" data-drop="${i.id}">지우기</button>` : ""}</li>`;
   const sec = (title, arr) => arr.length ? `<p class="mut" style="font-weight:700;margin-top:8px">${title}</p><ul class="hist" style="font-size:14px;color:#111">${arr.map(line).join("")}</ul>` : "";
   return sec("콘셉트", memos.filter((i) => i.about === "concept"))
     + S.nodes.map((n) => sec(esc(tagOf(n)), memos.filter((i) => i.related.includes(n.id)))).join("")
@@ -221,6 +222,15 @@ function renderWrap() {
       ${kept.length || pend.length ? groups([...kept, ...pend]) : `<p class="mut">없음</p>`}</div>
     <button class="primary" data-act="back">캔버스로 돌아가기</button></div>`;
   root.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => { sel = b.dataset.go; mode = "canvas"; render(); }));
+  // 확인 전 메모·정리를 여기서 한 번에 처리(문장을 고치려면 이름을 눌러 캔버스에서)
+  const resolve = (id, keep) => async () => {
+    const i = ideaItems().find((x) => x.id === id);
+    try { S = await call("app_resolve_idea", { idea_id: id, keep, related: i.related, concept: i.about === "concept" }); } catch (e) { return toast(e.message); }
+    await tellModel(`${summary()}\n학생이 ${i.letter}를 ${keep ? "남겼습니다" : "지웠습니다"}.`);
+    renderWrap();
+  };
+  root.querySelectorAll("[data-keep]").forEach((b) => (b.onclick = resolve(b.dataset.keep, true)));
+  root.querySelectorAll("[data-drop]").forEach((b) => (b.onclick = resolve(b.dataset.drop, false)));
   root.querySelector('[data-act="back"]').onclick = () => { mode = "canvas"; render(); };
 }
 

@@ -91,7 +91,7 @@ const logEvent = (code, sid, type, payload) =>
 
 // ---------- MCP 서버 (참여 코드별) ----------
 // 화면을 바꿀 때마다 주소의 버전을 올린다(호스트가 이전 화면을 캐시해 두는 경우 대비)
-const VIEW_URI = "ui://judgment/canvas-v7.html";
+const VIEW_URI = "ui://judgment/canvas-v8.html";
 function buildViewHtml() {
   const bundle = fs.readFileSync(path.join(DIR, "node_modules/@modelcontextprotocol/ext-apps/dist/src/app-with-deps.js"), "utf8");
   const m = bundle.match(/export\{([^}]*)\};?\s*$/);
@@ -108,7 +108,7 @@ const RULES = `판단 기록 캔버스 규칙:
 - 판단(선택·보류·제외·아직 모르겠어요)·이유·기준은 학생이 캔버스에서 정한다. 대신 정하거나 우열을 평가하거나 바꾸라고 권하지 않는다. 비교를 물으면 지금 기준을 짚고 학생 생각을 먼저 묻는다.
 - 이미지는 알파벳(A, B…)으로 가리킨다. 학생이 이미지 내용을 물으면 view_image로 본다. 이 대화에서 이미 본 이미지는 다시 부르지 않는다.
 - 말로 낸 새 아이디어 → note_idea(학생 말 그대로). "이걸로 갈게"·"아까 A가 나았어" → open_judgment. "기준 바꿀래" → open_criterion. 학생이 말하지 않았는데 기준이 바뀐 듯하면 propose_criterion(제안만). "오늘은 여기까지" → end_session.
-- 학생이 "정리해 줘"라고 하거나 끝낼 때, 대화에서 나온 결론만 note_summary로 짧게 올린다(관련 이미지 연결). 학생이 확인하기 전엔 학생 판단이 아니다. 매 대화마다 올리지 않는다.${RECORD_TURNS ? "\n- 매 응답 끝에 record_turn(학생 메시지와 내 답을 그대로) 한 번." : ""}`;
+- 대화에서 결론·결정·새로 알게 된 점이 나오면(학생이 말했거나 동의한 것) 스스로 note_summary로 한두 문장 올린다(관련 이미지·콘셉트 연결). 한 응답에 최대 하나, 단순한 질문·답에는 올리지 않는다. 학생에게 확인을 재촉하지 않는다(학생 확인 전엔 학생 판단이 아님).${RECORD_TURNS ? "\n- 매 응답 끝에 record_turn(학생 메시지와 내 답을 그대로) 한 번." : ""}`;
 
 function mcpFor(code) {
   const server = new McpServer({ name: "judgment-recorder-3", version: "0.2.0" }, { instructions: RULES });
@@ -172,12 +172,21 @@ function mcpFor(code) {
 
   server.registerTool("note_summary", {
     title: "대화 정리",
-    description: "학생이 정리해 달라고 하거나 끝낼 때, 대화에서 나온 결론을 캔버스에 '정리 · 확인 전'으로 올린다. text는 한두 문장, related는 관련 이미지 알파벳, concept=true면 콘셉트에 관한 정리. 학생이 고쳐 남기거나 지운다.",
+    description: "대화에서 결론·결정·새로 알게 된 점이 나왔을 때 '정리 · 확인 전'으로 올린다. text는 한두 문장, related는 관련 이미지 알파벳, concept=true면 콘셉트에 관한 정리. 같은 대상에 확인 전 정리가 있으면 그 카드를 고쳐 쓴다.",
     inputSchema: { text: z.string().max(600), related: z.array(z.string().max(4)).max(8).optional(), concept: z.boolean().optional() },
   }, async ({ text, related = [], concept }) => {
     const s = currentSession(code);
     if (!s) return err("탐색이 아직 시작되지 않았습니다.");
     const ids = related.map((l) => findNode(s.id, l)?.id).filter(Boolean);
+    // 같은 대상(이미지 묶음·콘셉트)에 확인 전 정리가 있으면 새로 만들지 않고 고쳐 쓴다(카드가 쌓이지 않게). 이전 문장은 events에 남긴다.
+    const key = JSON.stringify([...ids].sort()) + (concept ? "|c" : "");
+    const same = db.prepare("SELECT * FROM ideas WHERE session_id=? AND kind='summary' AND status='proposed' ORDER BY num DESC").all(s.id)
+      .find((r) => JSON.stringify(JSON.parse(r.related || "[]").sort()) + (r.about === "concept" ? "|c" : "") === key);
+    if (same) {
+      logEvent(code, s.id, "summary_update", { idea_id: same.id, before: same.text_relayed });
+      db.prepare("UPDATE ideas SET text_relayed=?, created_at=? WHERE id=?").run(text, now(), same.id);
+      return { content: [{ type: "text", text: `확인 전인 '정리${same.num}'을 고쳐 썼습니다.` }] };
+    }
     const num = (db.prepare("SELECT max(num) m FROM ideas WHERE session_id=? AND kind='summary'").get(s.id)?.m ?? 0) + 1;
     db.prepare("INSERT INTO ideas(id,session_id,num,text_relayed,related,status,created_at,kind,about) VALUES(?,?,?,?,?,?,?,?,?)")
       .run(id(), s.id, num, text, JSON.stringify(ids), "proposed", now(), "summary", concept ? "concept" : null);
