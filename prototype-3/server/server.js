@@ -91,7 +91,7 @@ const logEvent = (code, sid, type, payload) =>
 
 // ---------- MCP 서버 (참여 코드별) ----------
 // 화면을 바꿀 때마다 주소의 버전을 올린다(호스트가 이전 화면을 캐시해 두는 경우 대비)
-const VIEW_URI = "ui://judgment/canvas-v4.html";
+const VIEW_URI = "ui://judgment/canvas-v5.html";
 function buildViewHtml() {
   const bundle = fs.readFileSync(path.join(DIR, "node_modules/@modelcontextprotocol/ext-apps/dist/src/app-with-deps.js"), "utf8");
   const m = bundle.match(/export\{([^}]*)\};?\s*$/);
@@ -105,6 +105,7 @@ const RULES = `판단 기록 캔버스 규칙:
 - 대화가 시작되면 다른 도움보다 먼저 open_canvas를 부른다. 학생이 새 주제로 시작한다고 하면 new_exploration=true로 부른다.
 - 학생이 캔버스 시작 화면에서 디자인 콘셉트와 판단 기준을 직접 적기 전에는 이미지를 만들거나 아이디어를 제안하지 않는다. 기준을 대신 적어 주거나 예시 기준을 제시하지도 않는다. "캔버스에서 기준부터 적어 주세요"라고만 안내한다.
 - 이미지의 판단(선택·보류·제외·아직 모르겠어요), 이유, 1순위 기준은 학생이 캔버스에서 직접 정한다. 대신 정하거나, 어느 쪽이 낫다고 평가하거나, 판단을 바꾸라고 권하지 않는다.
+- 학생이 캔버스 이미지(A, B, C…)에 대해 말하면 답하기 전에 view_image로 그 이미지를 직접 본다. 이미지를 볼 수 없다고 말하거나 생김새를 되묻지 않는다.
 - 학생이 이미지에 대해 말하면 알파벳(A, B, C…)으로 가리킨다.
 - 학생이 이미지 없이 말로 새 아이디어를 꺼내면("이런 생각이 났어", "~하면 어떨까") note_idea로 학생 말을 그대로 올린다. 아이디어를 먼저 발전시키거나 다듬지 않는다.
 - 학생이 캔버스의 이미지를 다음 작업에 쓰겠다고 하거나("이걸로 갈게", "C로 하자") 앞의 이미지로 되돌아가려 하면("아까 A가 나았던 것 같아") open_judgment를 부른다. 캔버스에 아직 없는 결과라면 먼저 캔버스에 올려 달라고만 안내한다.
@@ -219,6 +220,26 @@ function mcpFor(code) {
       .run(keep ? "kept" : "dismissed", keep ? ((text || "").trim() || row.text_relayed) : null,
         related ? JSON.stringify(related.filter((r) => known.has(r))) : row.related, now(), idea_id);
     return ok(keep ? "남겼습니다." : "지웠습니다.");
+  });
+
+  server.registerTool("view_image", {
+    title: "캔버스 이미지 보기",
+    description: "학생이 캔버스에 올린 이미지를 알파벳으로 불러와 직접 본다. 학생이 A, B, C… 이미지에 대해 이야기하거나 비교하려 할 때, 답하기 전에 먼저 부른다. 최대 4장. 판단·이유는 학생이 정한 것이므로 평가하지 않는다.",
+    inputSchema: { letters: z.array(z.string().max(4)).min(1).max(4).describe("이미지 알파벳, 예: [\"A\"] 또는 [\"B\",\"C\"]") },
+  }, async ({ letters }) => {
+    const st = state(code);
+    if (!st.session) return err("아직 탐색이 시작되지 않았습니다. open_canvas를 불러 학생이 기준부터 적게 하세요.");
+    const content = [];
+    for (const l of letters) {
+      const n = st.nodes.find((x) => x.letter.toUpperCase() === String(l).trim().toUpperCase());
+      if (!n) { content.push({ type: "text", text: `${l}: 캔버스에 없는 이미지입니다.` }); continue; }
+      const row = db.prepare("SELECT i.mime, i.data FROM nodes n JOIN images i ON i.id = n.image_id WHERE n.id=?").get(n.id);
+      const from = n.parents.map((p) => st.nodes.find((x) => x.id === p)?.letter ?? st.ideas.find((x) => x.id === p)?.label).filter(Boolean).join("+");
+      content.push({ type: "text", text: `${n.letter}${n.name ? " " + n.name : ""}${from ? ` (← ${from})` : ""} · 학생 판단: ${n.judgment ? n.judgment.label : "판단 전"}` });
+      if (row) content.push({ type: "image", data: Buffer.from(row.data).toString("base64"), mimeType: row.mime });
+    }
+    logEvent(code, st.session.id, "view_image", { letters });
+    return { content };
   });
 
   server.registerTool("get_canvas_state", {

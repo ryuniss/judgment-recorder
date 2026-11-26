@@ -248,7 +248,7 @@ function bind() {
   act("talk", async () => {
     const nd = nodeById(sel);
     S = await call("app_event", { type: "focus", node_id: nd.id }).then(() => call("app_get_state"));
-    await tellModel(`${summary()}\n학생이 ${tagOf(nd)}에 대해 이야기하려고 합니다.`);
+    await tellModel(`${summary()}\n학생이 ${tagOf(nd)}에 대해 이야기하려고 합니다. 답하기 전에 view_image로 ${nd.letter}를 직접 보세요.`);
     render(); await say(`${tagOf(nd)}에 대해 이야기해 볼게요.`);
   });
   const ip = root.querySelector(".panel #keep")?.closest(".panel");
@@ -382,7 +382,7 @@ async function openSource(file, preset, origin, dropOn = false) {
     catch (err) { e.target.disabled = false; return toast(err.message); }
     scrim.remove();
     const nd = S.nodes.at(-1); sel = nd.id;
-    await tellModel(`${summary()}\n학생이 ${tagOf(nd)}를 올렸습니다${nd.parents.length ? ` (출처: ${nd.parents.map((p) => nodeById(p)?.letter).join("+")})` : ""}.`);
+    await tellModel(`${summary()}\n학생이 ${tagOf(nd)}를 올렸습니다${nd.parents.length ? ` (출처: ${nd.parents.map((p) => nodeById(p)?.letter).join("+")})` : ""}. 이미지는 view_image로 볼 수 있습니다.`);
     render();
     requestAnimationFrame(() => root.querySelector(`[data-node="${nd.id}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" }));
   };
