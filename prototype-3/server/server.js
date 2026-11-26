@@ -24,7 +24,8 @@ db.exec("PRAGMA journal_mode = WAL");
 db.exec(fs.readFileSync(path.join(DIR, "schema.sql"), "utf8"));
 // 추가 열: 기준 순위(1·2·3), 콘셉트와의 연결(학생 작성)
 for (const sql of ["ALTER TABLE criteria ADD COLUMN rank INTEGER NOT NULL DEFAULT 1", "ALTER TABLE criteria ADD COLUMN basis TEXT", "ALTER TABLE nodes ADD COLUMN thumb_id TEXT",
-  "ALTER TABLE ideas ADD COLUMN kind TEXT NOT NULL DEFAULT 'idea'", "ALTER TABLE ideas ADD COLUMN about TEXT"]) { try { db.exec(sql); } catch { /* 이미 있음 */ } }
+  "ALTER TABLE ideas ADD COLUMN kind TEXT NOT NULL DEFAULT 'idea'", "ALTER TABLE ideas ADD COLUMN about TEXT",
+  "ALTER TABLE nodes ADD COLUMN group_id TEXT"]) { try { db.exec(sql); } catch { /* 이미 있음 */ } }
 
 const id = () => crypto.randomBytes(8).toString("hex");
 const now = () => new Date().toISOString();
@@ -50,15 +51,18 @@ function state(code, { rawLimit = 12 } = {}) {
   const nodes = db.prepare("SELECT * FROM nodes WHERE session_id=? ORDER BY created_at").all(sid).map((n) => {
     const h = history.filter((j) => j.node_id === n.id);
     return { id: n.id, letter: n.letter, name: n.name, origin: n.origin, created_at: n.created_at,
-      image_url: n.image_id ? `${PUBLIC_URL}/img/${n.image_id}` : null, parents: JSON.parse(n.parents || "[]"),
+      image_url: n.image_id ? `${PUBLIC_URL}/img/${n.image_id}` : null, parents: JSON.parse(n.parents || "[]"), group_id: n.group_id ?? null,
       judgment: h.at(-1) || null, history: h };
   });
   const focus = db.prepare("SELECT payload FROM events WHERE session_id=? AND type='focus' ORDER BY created_at DESC LIMIT 1").get(sid);
   const ideas = db.prepare("SELECT * FROM ideas WHERE session_id=? ORDER BY num").all(sid)
     .map((i) => ({ ...i, related: JSON.parse(i.related || "[]"), label: `${i.kind === "summary" ? "정리" : "메모"}${i.num}` }));
   const positions = Object.fromEntries(db.prepare("SELECT item_id, x, y FROM positions WHERE session_id=?").all(sid).map((p) => [p.item_id, { x: p.x, y: p.y }]));
+  const groups = db.prepare("SELECT * FROM rounds WHERE session_id=? ORDER BY num").all(sid).map((g) => ({
+    id: g.id, num: g.num, kind: g.kind, name: g.name, label: g.name || `${g.num}라운드`, parents: JSON.parse(g.parents || "[]"),
+    parents_auto: !!g.parents_auto, created_at: g.created_at, members: nodes.filter((n) => n.group_id === g.id).map((n) => n.id) }));
   const concepts = db.prepare("SELECT text, created_at FROM concepts WHERE session_id=? ORDER BY created_at").all(sid);
-  return { session, criteria, nodes, ideas, positions, concepts, concept: concepts.at(-1)?.text ?? session?.intent ?? null,
+  return { session, criteria, nodes, ideas, groups, positions, concepts, concept: concepts.at(-1)?.text ?? session?.intent ?? null,
     current_criterion: criteria.filter((c) => c.status === "confirmed" && (c.rank ?? 1) === 1).at(-1) || null,
     current_criteria: [1, 2, 3].map((r) => criteria.filter((c) => c.status === "confirmed" && (c.rank ?? 1) === r).at(-1)).filter((c) => c && c.text),
     proposal: criteria.filter((c) => c.status === "proposed").at(-1) || null,
@@ -72,8 +76,13 @@ function summaryText(s) {
   const lines = [`디자인 콘셉트(학생 작성): ${s.concept ?? "-"}`,
     ...s.current_criteria.map((c) => `${c.rank ?? 1}순위 기준(학생 작성): ${c.text}`)];
   for (const n of s.nodes) {
-    const from = n.parents.map((p) => s.nodes.find((x) => x.id === p)?.letter ?? s.ideas.find((x) => x.id === p)?.label).filter(Boolean).join("+");
+    const from = n.parents.map((p) => s.nodes.find((x) => x.id === p)?.letter ?? s.ideas.find((x) => x.id === p)?.label ?? s.groups.find((x) => x.id === p)?.label).filter(Boolean).join("+");
     lines.push(`${n.letter}${n.name ? " " + n.name : ""}${from ? ` (← ${from})` : ""}: ${n.judgment ? n.judgment.label : "판단 전"}${n.judgment ? (n.judgment.reason ? ` / 이유 "${n.judgment.reason}"` : " / 이유 미기록") : ""}`);
+  }
+  const lbl = (id) => s.nodes.find((x) => x.id === id)?.letter ?? s.ideas.find((x) => x.id === id)?.label ?? s.groups.find((x) => x.id === id)?.label;
+  for (const g of s.groups) {
+    const from = g.parents.map(lbl).filter(Boolean).join("+");
+    lines.push(`[${g.label}] ${g.members.map(lbl).join(" ")}${from ? ` (← ${from}${g.parents_auto ? ", 자동·확인 전" : ""})` : ""}`);
   }
   for (const i of s.ideas.filter((x) => x.status !== "dismissed")) {
     const rel = i.related.map((r) => s.nodes.find((n) => n.id === r)?.letter).filter(Boolean).join("+");
@@ -92,7 +101,7 @@ const logEvent = (code, sid, type, payload) =>
 
 // ---------- MCP 서버 (참여 코드별) ----------
 // 화면을 바꿀 때마다 주소의 버전을 올린다(호스트가 이전 화면을 캐시해 두는 경우 대비)
-const VIEW_URI = "ui://judgment/canvas-v9.html";
+const VIEW_URI = "ui://judgment/canvas-v10.html";
 function buildViewHtml() {
   const bundle = fs.readFileSync(path.join(DIR, "node_modules/@modelcontextprotocol/ext-apps/dist/src/app-with-deps.js"), "utf8");
   const m = bundle.match(/export\{([^}]*)\};?\s*$/);
@@ -321,9 +330,10 @@ function mcpFor(code) {
   registerAppTool(server, "app_add_node", {
     description: "학생이 올린 이미지와 학생이 고른 출처 저장",
     inputSchema: { image: z.string().max(8_000_000), thumb: z.string().max(1_000_000).optional().describe("AI가 볼 축소본(768px)"), name: z.string().max(60).optional(),
-      parents: z.array(z.string()).max(12), origin: z.enum(["버튼", "끌어다 놓기"]) },
+      group_id: z.string().optional().describe("생성 묶음에 넣을 때. 출처는 묶음 단위라 parents는 무시"),
+      parents: z.array(z.string()).max(12), origin: z.enum(["버튼", "끌어다 놓기", "한꺼번에"]) },
     _meta: appOnly,
-  }, async ({ image, thumb, name, parents, origin }) => {
+  }, async ({ image, thumb, name, parents, origin, group_id }) => {
     const s = currentSession(code);
     if (!s) return err("먼저 디자인 콘셉트와 판단 기준을 적어 주세요.");
     const m = image.match(/^data:(image\/(png|jpeg|webp|gif));base64,(.+)$/);
@@ -331,14 +341,16 @@ function mcpFor(code) {
     const known = new Set(db.prepare("SELECT id FROM nodes WHERE session_id=?").all(s.id).map((r) => r.id));
     const count = known.size;
     db.prepare("SELECT id FROM ideas WHERE session_id=? AND status='kept'").all(s.id).forEach((r) => known.add(r.id));
+    db.prepare("SELECT id FROM rounds WHERE session_id=?").all(s.id).forEach((r) => known.add(r.id));
+    if (group_id && !db.prepare("SELECT 1 FROM rounds WHERE id=? AND session_id=?").get(group_id, s.id)) return err("묶음을 찾지 못했어요.");
     const iid = id(), t = now();
     db.prepare("INSERT INTO images(id,code,mime,data,created_at) VALUES(?,?,?,?,?)").run(iid, code, m[1], Buffer.from(m[3], "base64"), t);
     const tm = thumb && thumb.match(/^data:(image\/(png|jpeg|webp));base64,(.+)$/);
     const tid = tm ? id() : null;
     if (tm) db.prepare("INSERT INTO images(id,code,mime,data,created_at) VALUES(?,?,?,?,?)").run(tid, code, tm[1], Buffer.from(tm[3], "base64"), t);
     const nid = id();
-    db.prepare("INSERT INTO nodes(id,session_id,letter,name,image_id,thumb_id,parents,origin,author,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
-      .run(nid, s.id, letterFor(count), (name || "").trim() || null, iid, tid, JSON.stringify(parents.filter((p) => known.has(p))), origin, "student", t);
+    db.prepare("INSERT INTO nodes(id,session_id,letter,name,image_id,thumb_id,parents,origin,author,created_at,group_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      .run(nid, s.id, letterFor(count), (name || "").trim() || null, iid, tid, JSON.stringify(group_id ? [] : parents.filter((p) => known.has(p))), origin, "student", t, group_id ?? null);
     logEvent(code, s.id, "focus", { node_id: nid });
     return ok(`${letterFor(count)}를 올렸습니다.`);
   });
@@ -386,6 +398,39 @@ function mcpFor(code) {
     return ok("콘셉트를 기록했습니다.");
   });
 
+  registerAppTool(server, "app_add_group", {
+    description: "한꺼번에 올리기: 생성 묶음(라운드) 만들기. parents_auto=true면 화면이 미리 고른 출처를 학생이 손대지 않은 것",
+    inputSchema: { name: z.string().max(40).optional(), parents: z.array(z.string()).max(12), parents_auto: z.boolean() },
+    _meta: appOnly,
+  }, async ({ name, parents, parents_auto }) => {
+    const s = currentSession(code);
+    if (!s) return err("먼저 디자인 콘셉트와 판단 기준을 적어 주세요.");
+    const known = new Set([...db.prepare("SELECT id FROM nodes WHERE session_id=?").all(s.id), ...db.prepare("SELECT id FROM ideas WHERE session_id=? AND status='kept'").all(s.id),
+      ...db.prepare("SELECT id FROM rounds WHERE session_id=?").all(s.id)].map((r) => r.id));
+    const ps = parents.filter((p) => known.has(p));
+    const gid = id(), num = (db.prepare("SELECT max(num) m FROM rounds WHERE session_id=?").get(s.id)?.m ?? 0) + 1;
+    db.prepare("INSERT INTO rounds(id,session_id,num,kind,name,parents,parents_auto,author,created_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(gid, s.id, num, "round", (name || "").trim() || null, JSON.stringify(ps), parents_auto && ps.length ? 1 : 0, "student", now());
+    return { content: [{ type: "text", text: "ok" }], structuredContent: { ...state(code), created_group: gid } };
+  });
+
+  registerAppTool(server, "app_set_group", {
+    description: "묶음 출처 확인·수정(학생 확인으로 바뀜), 이름 수정",
+    inputSchema: { group_id: z.string(), parents: z.array(z.string()).max(12), name: z.string().max(40).optional() },
+    _meta: appOnly,
+  }, async ({ group_id, parents, name }) => {
+    const s = currentSession(code);
+    const g = s && db.prepare("SELECT * FROM rounds WHERE id=? AND session_id=?").get(group_id, s.id);
+    if (!g) return err("묶음을 찾지 못했어요.");
+    const members = new Set(db.prepare("SELECT id FROM nodes WHERE group_id=?").all(group_id).map((r) => r.id));
+    const known = new Set([...db.prepare("SELECT id FROM nodes WHERE session_id=?").all(s.id), ...db.prepare("SELECT id FROM ideas WHERE session_id=? AND status='kept'").all(s.id),
+      ...db.prepare("SELECT id FROM rounds WHERE session_id=?").all(s.id)].map((r) => r.id));
+    const ps = parents.filter((p) => known.has(p) && p !== group_id && !members.has(p));
+    logEvent(code, s.id, "group_parents", { group_id, before: JSON.parse(g.parents), before_auto: !!g.parents_auto, after: ps });
+    db.prepare("UPDATE rounds SET parents=?, parents_auto=0, name=?, confirmed_at=? WHERE id=?").run(JSON.stringify(ps), name === undefined ? g.name : (name.trim() || null), now(), group_id);
+    return ok("묶음을 고쳤습니다.");
+  });
+
   registerAppTool(server, "app_set_position", {
     description: "학생이 캔버스에서 옮긴 위치 저장",
     inputSchema: { item_id: z.string(), x: z.number().min(-5000).max(50000), y: z.number().min(-5000).max(50000) },
@@ -393,7 +438,7 @@ function mcpFor(code) {
   }, async ({ item_id, x, y }) => {
     const s = currentSession(code);
     if (!s) return err("탐색이 아직 시작되지 않았습니다.");
-    const ok1 = db.prepare("SELECT 1 FROM nodes WHERE id=? AND session_id=? UNION SELECT 1 FROM ideas WHERE id=? AND session_id=?").get(item_id, s.id, item_id, s.id);
+    const ok1 = db.prepare("SELECT 1 FROM nodes WHERE id=? AND session_id=? UNION SELECT 1 FROM ideas WHERE id=? AND session_id=? UNION SELECT 1 FROM rounds WHERE id=? AND session_id=?").get(item_id, s.id, item_id, s.id, item_id, s.id);
     if (!ok1) return err("항목을 찾지 못했어요.");
     db.prepare("INSERT INTO positions(item_id,session_id,x,y,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET x=excluded.x, y=excluded.y, updated_at=excluded.updated_at")
       .run(item_id, s.id, Math.round(x), Math.round(y), now());
@@ -710,7 +755,7 @@ app.get("/admin/identities", admin, (_q, res) => res.json(db.prepare("SELECT pro
 app.get("/admin/export", admin, (_q, res) => {
   const t = (n) => db.prepare(`SELECT * FROM ${n}`).all();
   res.json({ exported_at: now(), participants: t("participants"), sessions: t("sessions"), raw: t("raw"),
-    criteria: t("criteria"), concepts: t("concepts"), nodes: t("nodes"), ideas: t("ideas"), positions: t("positions"), node_judgments: t("node_judgments"), relayed_turns: t("relayed_turns"),
+    criteria: t("criteria"), concepts: t("concepts"), groups: t("rounds"), nodes: t("nodes"), ideas: t("ideas"), positions: t("positions"), node_judgments: t("node_judgments"), relayed_turns: t("relayed_turns"),
     events: t("events"), judgments: t("judgments"), review_triggers: t("review_triggers") });
 });
 

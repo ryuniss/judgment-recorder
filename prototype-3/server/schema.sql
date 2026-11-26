@@ -47,3 +47,7 @@ CREATE TABLE IF NOT EXISTS ideas (
 CREATE TABLE IF NOT EXISTS positions (item_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, updated_at TEXT NOT NULL);
 -- 디자인 콘셉트 변경 이력(학생 작성). 처음 콘셉트는 sessions.intent.
 CREATE TABLE IF NOT EXISTS concepts (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, text TEXT NOT NULL, author TEXT NOT NULL, created_at TEXT NOT NULL);
+-- 생성 묶음(라운드): 한꺼번에 올린 이미지들. 출처는 묶음 단위. parents_auto=1이면 화면이 미리 고른 출처를 학생이 손대지 않은 것(확인 전).
+CREATE TABLE IF NOT EXISTS rounds (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, num INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'round', name TEXT,
+  parents TEXT NOT NULL DEFAULT '[]', parents_auto INTEGER NOT NULL DEFAULT 0, author TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_at TEXT);
