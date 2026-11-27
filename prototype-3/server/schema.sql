@@ -51,3 +51,5 @@ CREATE TABLE IF NOT EXISTS concepts (id TEXT PRIMARY KEY, session_id TEXT NOT NU
 CREATE TABLE IF NOT EXISTS rounds (
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL, num INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'round', name TEXT,
   parents TEXT NOT NULL DEFAULT '[]', parents_auto INTEGER NOT NULL DEFAULT 0, author TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_at TEXT);
+-- 학생이 만든 묶음(클러스터) 구성원. 묶음 자체는 rounds(kind='cluster'). 한 이미지가 여러 묶음에 들어갈 수 있다.
+CREATE TABLE IF NOT EXISTS cluster_members (cluster_id TEXT NOT NULL, node_id TEXT NOT NULL, added_at TEXT NOT NULL, PRIMARY KEY (cluster_id, node_id));

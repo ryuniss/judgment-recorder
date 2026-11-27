@@ -10,6 +10,7 @@ const NODE_W = 180, NODE_H = 196, X_H = 96, COL = 250, ROW = 24, PAD = 40;
 const params = new URLSearchParams(location.search);
 const demo = params.has("demo");
 let app = null, S = null, mode = "canvas", q6 = "";
+let picking = false, picked = new Set(), showCluster = null; // 학생 묶음: 고르기 모드, 고른 이미지, 강조 중인 묶음
 let showMore = false, sel = null, scale = 1, toastTimer = null, hostMode = "inline", avail = [], judgeCtx = null;
 
 // ---------- 서버 호출 ----------
@@ -54,6 +55,8 @@ function toast(t) {
 const ideaItems = () => (S?.ideas || []).filter((i) => i.status !== "dismissed")
   .map((i) => ({ ...i, kind: "idea", memo: i.kind === "summary" ? "summary" : "idea", letter: i.label, parents: i.related, text: i.text_final ?? i.text_relayed }));
 const items = () => [...(S?.nodes || []), ...ideaItems()];
+const clusterItems = () => S?.clusters || [];
+const clustersOf = (nid) => clusterItems().filter((c) => c.members.includes(nid));
 const groupItems = () => (S?.groups || []).map((g) => ({ ...g, kind: "group", letter: g.label }));
 const nodeById = (id) => items().find((n) => n.id === id) || groupItems().find((g) => g.id === id);
 const curCrit = () => S?.current_criteria?.length ? S.current_criteria : (S?.current_criterion ? [{ ...S.current_criterion, rank: 1 }] : []);
@@ -72,6 +75,7 @@ function summary() {
     const from = g.parents.map((p) => nodeById(p)?.letter).filter(Boolean).join("+");
     lines.push(`[${g.letter}] ${g.members.map((m) => nodeById(m)?.letter).join(" ")}${from ? ` (← ${from}${g.parents_auto ? ", 자동·확인 전" : ""})` : ""}`);
   }
+  for (const c of clusterItems()) lines.push(`[내 묶음 '${c.label}'] ${c.members.map((m) => nodeById(m)?.letter).join(" ")} (학생이 묶음)`);
   for (const i of ideaItems()) lines.push(`${i.letter}: "${i.text}" (${i.status === "kept" ? "학생이 남김" : "확인 전"})`);
   lines.push("판단·이유·기준은 학생이 정한 것입니다. 평가하거나 바꾸라고 권하지 마세요.");
   return lines.join("\n");
@@ -157,7 +161,9 @@ function render() {
       <div class="zoom"><button data-act="zout" aria-label="축소">−</button><span>${Math.round(scale * 100)}%</span><button data-act="zin" aria-label="확대">+</button></div>
       <button class="sec" data-act="fit">한눈에 보기</button>
       ${Object.keys(S.positions || {}).length ? `<button class="ghost" data-act="relayout">자동 정렬</button>` : ""}
+      <button class="sec" data-act="pick" aria-pressed="${picking}">${picking ? "묶기 그만" : "묶기"}</button>
       <button class="primary" data-act="upload">이미지 올리기</button></div>
+    ${clusterItems().length ? `<div class="clist"><span class="k">내 묶음</span>${clusterItems().map((c) => `<button type="button" class="cchip" data-cl="${c.id}" aria-pressed="${showCluster === c.id}">${esc(c.label)} <span class="mut">${c.members.length}</span></button>`).join("")}</div>` : ""}
   </div>
   <div class="body">
     <div class="vp" id="vp">
@@ -172,23 +178,30 @@ function render() {
       </div></div>
       ${n || nm ? "" : `<div class="empty"><div><b style="color:#111">첫 이미지를 올려 주세요</b>AI로 만든 이미지를 저장해서 여기에 끌어다 놓거나, 위의 [이미지 올리기]를 눌러요.</div></div>`}
     </div>
-    ${sel && nodeById(sel) ? (nodeById(sel).kind === "idea" ? ideaPanelHtml(nodeById(sel)) : panelHtml(nodeById(sel))) : ""}
+    ${sel && nodeById(sel) ? (nodeById(sel).kind === "idea" ? ideaPanelHtml(nodeById(sel)) : panelHtml(nodeById(sel)))
+      : showCluster && clusterItems().some((c) => c.id === showCluster) ? clusterPanelHtml(clusterItems().find((c) => c.id === showCluster)) : ""}
+    ${picking ? `<div class="pickbar" role="status"><span>${picked.size ? `${picked.size}장 고름` : "묶을 이미지를 눌러 고르세요"}${showCluster ? " · 지금 묶음에 더하기" : ""}</span>
+      <button class="primary" data-act="pick-done" ${picked.size ? "" : "disabled"}>${showCluster ? "이 묶음에 더하기" : "이름 짓고 묶기"}</button><button class="ghost" data-act="pick">취소</button></div>` : ""}
   </div>`;
   bind();
 }
 
 function nodeHtml(nd, p, focus) {
-  if (nd.kind === "idea") return `<button class="node idea ${nd.memo} ${nd.status === "proposed" ? "pending" : ""} ${sel === nd.id ? "sel" : ""}" data-node="${nd.id}"
+  if (nd.kind === "idea") return `<button class="node idea ${nd.memo} ${nd.status === "proposed" ? "pending" : ""} ${sel === nd.id ? "sel" : ""} ${picking || showCluster ? "dim" : ""}" data-node="${nd.id}"
     style="left:${p.x}px;top:${p.y}px" aria-label="${esc(nd.letter)}, ${nd.status === "kept" ? "남김" : "확인 전"}">
     <span class="nm"><span class="lt">${esc(nd.letter)}</span></span><span class="it">${esc(nd.text)}</span>
     <span class="lb ${nd.status === "kept" ? "" : "none"}">${nd.status === "kept" ? "남김" : "확인 전"}</span></button>`;
   const lb = nd.judgment?.label;
   const x = lb === "제외";
-  return `<button class="node ${p.member ? "mini" : ""} ${x ? "x" : ""} ${sel === nd.id ? "sel" : ""} ${focus === nd.id && !x ? "focus" : ""}" data-node="${nd.id}"
+  const cl = clusterItems().find((c) => c.id === showCluster);
+  const state2 = picking ? (picked.has(nd.id) ? "picked" : "") : cl ? (cl.members.includes(nd.id) ? "hl" : "dim") : "";
+  const tags = clustersOf(nd.id);
+  return `<button class="node ${p.member ? "mini" : ""} ${x ? "x" : ""} ${state2} ${sel === nd.id ? "sel" : ""} ${focus === nd.id && !x ? "focus" : ""}" data-node="${nd.id}"
     style="left:${p.x}px;top:${p.y}px" aria-label="${esc(tagOf(nd))}, ${esc(lb ?? "판단 전")}">
     ${nd.image_url ? `<img src="${esc(nd.image_url)}" alt="" draggable="false">` : ""}
     <span class="nm"><span class="lt">${esc(nd.letter)}</span>${x ? "" : esc(nd.name ?? "")}</span>
-    <span class="lb ${lb ? esc(lb) : "none"}">${esc(lb ?? "판단 전")}</span></button>`;
+    <span class="lb ${lb ? esc(lb) : "none"}">${esc(lb ?? "판단 전")}</span>
+    ${tags.length && !x ? `<span class="ctags">${tags.slice(0, 2).map((c) => `<span>${esc(c.label)}</span>`).join("")}${tags.length > 2 ? `<span>+${tags.length - 2}</span>` : ""}</span>` : ""}</button>`;
 }
 
 function panelHtml(nd) {
@@ -201,6 +214,7 @@ function panelHtml(nd) {
     ${judgeCtx && judgeCtx.target === nd.id ? `<p class="note">대화에서${judgeCtx.why ? ` (${esc(judgeCtx.why)})` : ""}${judgeCtx.words ? `: "${esc(judgeCtx.words)}"` : ""} — 판단을 직접 골라 주세요.</p>` : ""}
     ${nd.image_url ? `<img class="big" src="${esc(nd.image_url)}" alt="">` : ""}
     <p class="mut">${grp ? `${esc(grp.letter)} · ` : ""}출처: ${from.length ? from.map((f) => esc(tagOf(f))).join(" + ") : "처음 시작"}${grp?.parents_auto ? " (자동 · 확인 전)" : ""} · ${esc(nd.origin ?? "")}로 올림</p>
+    ${clustersOf(nd.id).length ? `<p class="mut">내 묶음: ${clustersOf(nd.id).map((c) => `<button class="ghost" data-cl="${c.id}">${esc(c.label)}</button>`).join(" ")}</p>` : ""}
     <div class="row"><button class="sec" data-act="talk">대화창에 '${esc(nd.letter)}에 대해 이야기하기' 보내기</button>
       <button class="sec" data-act="child">여기서 이어서 올리기</button></div>
     <div><p style="font-weight:700;font-size:14px;margin-bottom:6px">판단 <span class="mut" style="font-weight:400">지금: ${esc(lb ?? "판단 전")}</span></p>
@@ -232,6 +246,38 @@ function ideaPanelHtml(i) {
   </aside>`;
 }
 
+function clusterPanelHtml(c) {
+  return `<aside class="panel" aria-label="${esc(c.label)}">
+    <h2>${esc(c.label)}<button class="close" data-act="cl-close" aria-label="닫기">×</button></h2>
+    <p class="mut">내가 묶은 이미지 ${c.members.length}장 · 라운드와 상관없이 묶을 수 있어요</p>
+    <label class="f"><span>묶음 이름</span><input type="text" id="cname" maxlength="40" value="${esc(c.name ?? "")}"></label>
+    <div class="srcs">${c.members.map((m) => nodeById(m)).filter(Boolean).map((n) => `<span class="src">${n.image_url ? `<img src="${esc(n.image_url)}" alt="">` : ""}${esc(n.letter)}<button class="ghost" data-crm="${n.id}" aria-label="${esc(n.letter)} 빼기">빼기</button></span>`).join("")}</div>
+    <div class="row"><button class="sec" data-act="cl-add">이미지 더 넣기</button><button class="sec" data-act="cl-save">이름 저장</button></div>
+    <button class="sec" data-act="cl-crit">이 이름을 판단 기준으로 기록하기</button>
+    <p class="mut">묶은 이유가 고를 때 보는 기준이라면 기준으로 남겨 두세요. 누르면 기준 기록 창이 열려요.</p>
+    <button class="ghost" data-act="cl-del">묶음 풀기</button>
+  </aside>`;
+}
+
+function askClusterName(members) {
+  const scrim = document.createElement("div"); scrim.className = "scrim";
+  scrim.innerHTML = `<div class="sheet" role="dialog" aria-label="묶음 이름"><h2>${members.length}장 묶기</h2>
+    <div class="srcs">${members.map((m) => nodeById(m)).filter(Boolean).map((n) => `<span class="src">${n.image_url ? `<img src="${esc(n.image_url)}" alt="">` : ""}${esc(n.letter)}</span>`).join("")}</div>
+    <label class="f"><span>이 묶음을 한마디로 하면? <span class="mut" style="font-weight:400">· 선택</span></span><input type="text" id="cn" maxlength="40"></label>
+    <div class="row"><button class="primary" id="ok">묶기</button><button class="sec" id="cancel">취소</button></div></div>`;
+  document.body.appendChild(scrim);
+  scrim.querySelector("#cn").focus();
+  scrim.querySelector("#cancel").onclick = () => scrim.remove();
+  scrim.querySelector("#ok").onclick = async () => {
+    const name = scrim.querySelector("#cn").value;
+    let r; try { r = await call("app_add_cluster", { name, members }); } catch (e) { return toast(e.message); }
+    S = r; scrim.remove(); picking = false; picked = new Set(); showCluster = r.created_cluster ?? null; sel = null;
+    const c = clusterItems().find((x) => x.id === showCluster);
+    if (c) await tellModel(`${summary()}\n학생이 ${c.members.map((m) => nodeById(m)?.letter).join(", ")}를 '${c.label}'(으)로 묶었습니다. 묶은 이유를 평가하거나 기준으로 바꾸자고 제안하지 마세요.`);
+    render();
+  };
+}
+
 // 메모·정리를 관련 대상(콘셉트, 이미지별, 연결 없음)으로 묶어 보여 준다
 function groups(memos) {
   const line = (i) => `<li><button class="ghost" data-go="${i.id}">${esc(i.letter)}</button> ${esc(i.text)}${i.status === "proposed"
@@ -254,6 +300,7 @@ function renderWrap() {
       <ol class="tl">${crit.map((c) => `<li><span class="tg">${c.rank ?? 1}순위 · ${esc(c.change_type)}</span><span class="mut">${esc(c.created_at.slice(5, 16).replace("T", " "))}</span><p>${esc(c.text)}</p></li>`).join("")}</ol></div>
     <div><h2 style="font-size:14px;margin:0 0 8px">판단 전 ${by(null).length}개 <span class="mut" style="font-weight:400">눌러서 지금 판단하거나, 그대로 두어도 돼요</span></h2>${list(by(null))}</div>
     ${["선택", "보류", "아직 모르겠어요", "제외"].map((lb) => `<div><h2 style="font-size:14px;margin:0 0 8px">${lb} ${by(lb).length}개</h2>${list(by(lb))}</div>`).join("")}
+    ${clusterItems().length ? `<div><h2 style="font-size:14px;margin:0 0 8px">내가 만든 묶음 ${clusterItems().length}개</h2>${clusterItems().map((c) => `<p style="margin:4px 0"><b>${esc(c.label)}</b> <span class="mut">${c.members.map((m) => nodeById(m)?.letter).filter(Boolean).join(" ")}</span></p>`).join("")}</div>` : ""}
     <div><h2 style="font-size:14px;margin:0 0 8px">메모·대화 정리 ${kept.length}개 남김${pend.length ? ` · 확인 전 ${pend.length}개` : ""}</h2>
       ${kept.length || pend.length ? groups([...kept, ...pend]) : `<p class="mut">없음</p>`}</div>
     <button class="primary" data-act="back">캔버스로 돌아가기</button></div>`;
@@ -299,11 +346,42 @@ function renderStart() {
 // ---------- 이벤트 ----------
 function bind() {
   root.querySelectorAll("[data-node]").forEach((b) => {
-    b.onclick = () => { if (dragged) { dragged = false; return; } sel = b.dataset.node; render(); };
+    b.onclick = () => {
+      if (dragged) { dragged = false; return; }
+      const id = b.dataset.node;
+      if (picking) { if (nodeById(id)?.kind === "idea") return; picked.has(id) ? picked.delete(id) : picked.add(id); return render(); }
+      sel = id; render();
+    };
     if (!b.classList.contains("mini")) b.onpointerdown = (e) => startDrag(e, b, b.dataset.node);
   });
   const act = (k, f) => root.querySelectorAll(`[data-act="${k}"]`).forEach((b) => (b.onclick = f));
   act("close", () => { sel = null; render(); });
+  act("pick", () => { picking = !picking; picked = new Set(); if (!picking) render(); else { sel = null; render(); } });
+  act("pick-done", async () => {
+    const ids = [...picked];
+    if (showCluster) {
+      try { S = await call("app_update_cluster", { cluster_id: showCluster, add: ids }); } catch (e) { return toast(e.message); }
+      picking = false; picked = new Set(); render(); return;
+    }
+    askClusterName(ids);
+  });
+  root.querySelectorAll("[data-cl]").forEach((b) => (b.onclick = () => { showCluster = showCluster === b.dataset.cl && !sel ? null : b.dataset.cl; sel = null; picking = false; render(); }));
+  act("cl-close", () => { showCluster = null; render(); });
+  act("cl-add", () => { picking = true; picked = new Set(); render(); });
+  act("cl-save", async () => {
+    const name = root.querySelector("#cname")?.value ?? "";
+    try { S = await call("app_update_cluster", { cluster_id: showCluster, name }); } catch (e) { return toast(e.message); }
+    toast("이름을 저장했어요"); render();
+  });
+  act("cl-crit", () => { const c = clusterItems().find((x) => x.id === showCluster); if (c) openCriterion(null, null, c.name || ""); });
+  act("cl-del", async () => {
+    try { S = await call("app_update_cluster", { cluster_id: showCluster, delete: true }); } catch (e) { return toast(e.message); }
+    showCluster = null; toast("묶음을 풀었어요. 기록은 남아요"); render();
+  });
+  root.querySelectorAll("[data-crm]").forEach((b) => (b.onclick = async () => {
+    try { S = await call("app_update_cluster", { cluster_id: showCluster, remove: [b.dataset.crm] }); } catch (e) { return toast(e.message); }
+    render();
+  }));
   root.querySelectorAll("[data-drag]").forEach((g) => (g.onpointerdown = (e) => { if (e.target.closest("button")) return; startDrag(e, g, g.dataset.drag); }));
   root.querySelectorAll("[data-gedit]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openGroup(groupItems().find((g) => g.id === b.dataset.gedit)); }));
   act("upload", () => pickFile(S.focus_node_id ? [S.focus_node_id] : []));
@@ -586,9 +664,10 @@ function openGroup(g) {
 const nextLetter = () => { let n = S.nodes.length, s = ""; n += 1; while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); } return s; };
 
 // ---------- 기준 ----------
-function openCriterion(proposal, words) {
-  let change = null, rank = proposal?.rank ?? 1;
-  const textFor = (r) => proposal?.text ?? curCrit().find((c) => (c.rank ?? 1) === r)?.text ?? "";
+function openCriterion(proposal, words, fromCluster) {
+  // fromCluster: 학생이 '이 이름을 기준으로' 누른 묶음 이름. 비어 있는 다음 순위를 미리 고른다.
+  let change = null, rank = proposal?.rank ?? (fromCluster != null ? ([1, 2, 3].find((r) => !curCrit().some((c) => (c.rank ?? 1) === r)) ?? 3) : 1);
+  const textFor = (r) => proposal?.text ?? (fromCluster != null ? fromCluster : curCrit().find((c) => (c.rank ?? 1) === r)?.text ?? "");
   const scrim = document.createElement("div"); scrim.className = "scrim";
   scrim.innerHTML = `<div class="sheet" role="dialog" aria-label="기준 변화 기록">
     <h2>판단 기준 기록</h2>
@@ -597,6 +676,7 @@ function openCriterion(proposal, words) {
     ${proposal ? "" : `<div><p style="font-weight:700;font-size:14px;margin-bottom:6px">어느 기준인가요?</p>
       <div class="chips" role="group" aria-label="기준 순위">${[1, 2, 3].map((r) => `<button type="button" aria-pressed="${r === rank}" data-rk="${r}">${r}순위${curCrit().some((c) => (c.rank ?? 1) === r) ? "" : " (새로)"}</button>`).join("")}</div></div>`}
     ${words ? `<p class="note">대화에서 내가 한 말: "${esc(words)}"</p>` : ""}
+    ${fromCluster != null ? `<p class="note">내가 지은 묶음 이름에서 가져왔어요. 기준 문장으로 다듬어 적어 주세요.</p>` : ""}
     ${proposal ? `<p class="note">정리 제안(AI 작성, 확인 전): ${esc(proposal.text)}<br>그대로 쓰거나 내 말로 고쳐서 기록하세요.</p>` : ""}
     <div><p style="font-weight:700;font-size:14px;margin-bottom:6px">어떤 변화인가요?</p>
       <div class="chips" role="group" aria-label="변화 종류">${CHANGES.map((c) => `<button type="button" aria-pressed="false" data-ch="${c}">${c}</button>`).join("")}</div></div>
@@ -686,6 +766,7 @@ function DEMO() {
     proposal: { id: "p1", text: "광원이 직접 보이지 않을 것", status: "proposed" },
     focus_node_id: "n3",
     positions: {},
+    clusters: [{ id: "c1", num: 1, name: "무게감 있는 것", label: "무게감 있는 것", members: ["n2", "n5"], created_at: t + "21" }],
     groups: [{ id: "g1", num: 1, kind: "round", name: null, label: "1라운드", parents: ["n3"], parents_auto: true, created_at: t + "18", members: ["n4", "n5", "n6"] }],
     ideas: [
       { id: "s1", num: 1, label: "정리1", kind: "summary", about: null, text_relayed: "벽 반사는 광원이 안 보이지만, 벽 색에 따라 밝기가 크게 달라진다", text_final: null, related: ["n3"], status: "proposed", created_at: t + "16" },
@@ -715,6 +796,10 @@ function demoCall(name, a) {
   if (name === "app_resolve_idea") { const i = S.ideas.find((x) => x.id === a.idea_id); i.status = a.keep ? "kept" : "dismissed"; i.text_final = a.keep ? (a.text?.trim() || i.text_relayed) : null; if (a.related) i.related = a.related; i.about = a.concept ? "concept" : null; }
   if (name === "app_add_group") { const id = "g" + (S.groups.length + 1); S.groups.push({ id, num: S.groups.length + 1, kind: "round", name: a.name || null, label: a.name || `${S.groups.length + 1}라운드`, parents: a.parents, parents_auto: a.parents_auto && a.parents.length > 0, created_at: T, members: [] }); return { ...S, created_group: id }; }
   if (name === "app_set_group") { const g = S.groups.find((x) => x.id === a.group_id); g.parents = a.parents; g.parents_auto = false; g.name = a.name || null; g.label = g.name || `${g.num}라운드`; }
+  if (name === "app_add_cluster") { const id = "c" + (S.clusters.length + 1); S.clusters.push({ id, num: S.clusters.length + 1, name: a.name || null, label: a.name || `묶음 ${S.clusters.length + 1}`, members: a.members, created_at: T }); return { ...S, created_cluster: id }; }
+  if (name === "app_update_cluster") { const c = S.clusters.find((x) => x.id === a.cluster_id);
+    if (a.delete) S.clusters = S.clusters.filter((x) => x !== c);
+    else { if (a.name !== undefined) { c.name = a.name || null; c.label = c.name || `묶음 ${c.num}`; } c.members = [...new Set([...c.members, ...(a.add || [])])].filter((m) => !(a.remove || []).includes(m)); } }
   if (name === "app_save_concept") { S.concepts = [...(S.concepts || []), { text: a.text, created_at: T }]; S.concept = a.text; }
   if (name === "app_set_position") S.positions[a.item_id] = { x: a.x, y: a.y };
   if (name === "app_reset_positions") S.positions = {};

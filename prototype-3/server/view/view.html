@@ -117,6 +117,14 @@ svg.edges path.auto{stroke-dasharray:5 4}
 .bimg img{width:100%;height:100%;object-fit:cover;display:block}
 .bimg span{position:absolute;left:6px;top:6px;background:#111;color:#fff;font-size:12px;font-weight:700;border-radius:5px;padding:1px 6px}
 .bimg[aria-pressed=false]{border-color:#ddd;opacity:.45}.bimg[aria-pressed=false] span{background:#888}
+.clist{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.clist .k{font-size:11px;font-weight:700;color:var(--mut);margin-right:2px}
+.cchip{font-size:12px;border:1px solid #c9c9c9;border-radius:999px;background:#fff;padding:3px 10px;min-height:30px}
+.cchip[aria-pressed=true]{background:#111;color:#fff;border-color:#111}.cchip[aria-pressed=true] .mut{color:#ccc}
+.node.dim{opacity:.25}.node.hl{outline:3px solid #111;outline-offset:2px}
+.node.picked{outline:3px solid #111;outline-offset:2px}.node.picked::before{content:"✓";position:absolute;top:-10px;left:-10px;width:22px;height:22px;border-radius:11px;background:#111;color:#fff;font-size:13px;display:flex;align-items:center;justify-content:center;z-index:2}
+.ctags{display:flex;gap:4px;flex-wrap:wrap}.ctags span{font-size:10px;color:#333;background:#eee;border-radius:4px;padding:0 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.pickbar{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #c9c9c9;border-radius:12px;padding:8px 10px 8px 14px;box-shadow:0 8px 24px rgba(0,0,0,.15);z-index:15;font-size:13px;white-space:nowrap}
+.pickbar .primary{min-height:36px;font-size:13px}
 @media (max-width:720px){
   .panel{position:absolute;left:0;right:0;bottom:0;width:auto;max-height:70%;border-left:0;border-top:1px solid var(--line);border-radius:12px 12px 0 0;box-shadow:0 -6px 20px rgba(0,0,0,.12);z-index:5}
   .tools .hint{display:none}

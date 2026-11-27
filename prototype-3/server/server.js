@@ -58,11 +58,14 @@ function state(code, { rawLimit = 12 } = {}) {
   const ideas = db.prepare("SELECT * FROM ideas WHERE session_id=? ORDER BY num").all(sid)
     .map((i) => ({ ...i, related: JSON.parse(i.related || "[]"), label: `${i.kind === "summary" ? "정리" : "메모"}${i.num}` }));
   const positions = Object.fromEntries(db.prepare("SELECT item_id, x, y FROM positions WHERE session_id=?").all(sid).map((p) => [p.item_id, { x: p.x, y: p.y }]));
-  const groups = db.prepare("SELECT * FROM rounds WHERE session_id=? ORDER BY num").all(sid).map((g) => ({
+  const groups = db.prepare("SELECT * FROM rounds WHERE session_id=? AND kind='round' ORDER BY num").all(sid).map((g) => ({
     id: g.id, num: g.num, kind: g.kind, name: g.name, label: g.name || `${g.num}라운드`, parents: JSON.parse(g.parents || "[]"),
     parents_auto: !!g.parents_auto, created_at: g.created_at, members: nodes.filter((n) => n.group_id === g.id).map((n) => n.id) }));
+  const clusters = db.prepare("SELECT * FROM rounds WHERE session_id=? AND kind='cluster' AND confirmed_at IS NOT 'deleted' ORDER BY created_at").all(sid).map((g) => ({
+    id: g.id, num: g.num, name: g.name, label: g.name || `묶음 ${g.num}`, created_at: g.created_at,
+    members: db.prepare("SELECT node_id FROM cluster_members WHERE cluster_id=? ORDER BY added_at").all(g.id).map((r) => r.node_id) }));
   const concepts = db.prepare("SELECT text, created_at FROM concepts WHERE session_id=? ORDER BY created_at").all(sid);
-  return { session, criteria, nodes, ideas, groups, positions, concepts, concept: concepts.at(-1)?.text ?? session?.intent ?? null,
+  return { session, criteria, nodes, ideas, groups, clusters, positions, concepts, concept: concepts.at(-1)?.text ?? session?.intent ?? null,
     current_criterion: criteria.filter((c) => c.status === "confirmed" && (c.rank ?? 1) === 1).at(-1) || null,
     current_criteria: [1, 2, 3].map((r) => criteria.filter((c) => c.status === "confirmed" && (c.rank ?? 1) === r).at(-1)).filter((c) => c && c.text),
     proposal: criteria.filter((c) => c.status === "proposed").at(-1) || null,
@@ -84,6 +87,7 @@ function summaryText(s) {
     const from = g.parents.map(lbl).filter(Boolean).join("+");
     lines.push(`[${g.label}] ${g.members.map(lbl).join(" ")}${from ? ` (← ${from}${g.parents_auto ? ", 자동·확인 전" : ""})` : ""}`);
   }
+  for (const c of s.clusters) lines.push(`[내 묶음 '${c.label}'] ${c.members.map(lbl).join(" ")} (학생이 묶음)`);
   for (const i of s.ideas.filter((x) => x.status !== "dismissed")) {
     const rel = i.related.map((r) => s.nodes.find((n) => n.id === r)?.letter).filter(Boolean).join("+");
     lines.push(`${i.label}${rel ? ` (← ${rel})` : i.about === "concept" ? " (콘셉트)" : ""}: ${i.status === "kept" ? `"${i.text_final ?? i.text_relayed}" (학생이 남김)` : `"${i.text_relayed}" (확인 전)`}`);
@@ -101,7 +105,7 @@ const logEvent = (code, sid, type, payload) =>
 
 // ---------- MCP 서버 (참여 코드별) ----------
 // 화면을 바꿀 때마다 주소의 버전을 올린다(호스트가 이전 화면을 캐시해 두는 경우 대비)
-const VIEW_URI = "ui://judgment/canvas-v10.html";
+const VIEW_URI = "ui://judgment/canvas-v11.html";
 function buildViewHtml() {
   const bundle = fs.readFileSync(path.join(DIR, "node_modules/@modelcontextprotocol/ext-apps/dist/src/app-with-deps.js"), "utf8");
   const m = bundle.match(/export\{([^}]*)\};?\s*$/);
@@ -408,7 +412,7 @@ function mcpFor(code) {
     const known = new Set([...db.prepare("SELECT id FROM nodes WHERE session_id=?").all(s.id), ...db.prepare("SELECT id FROM ideas WHERE session_id=? AND status='kept'").all(s.id),
       ...db.prepare("SELECT id FROM rounds WHERE session_id=?").all(s.id)].map((r) => r.id));
     const ps = parents.filter((p) => known.has(p));
-    const gid = id(), num = (db.prepare("SELECT max(num) m FROM rounds WHERE session_id=?").get(s.id)?.m ?? 0) + 1;
+    const gid = id(), num = (db.prepare("SELECT max(num) m FROM rounds WHERE session_id=? AND kind='round'").get(s.id)?.m ?? 0) + 1;
     db.prepare("INSERT INTO rounds(id,session_id,num,kind,name,parents,parents_auto,author,created_at) VALUES(?,?,?,?,?,?,?,?,?)")
       .run(gid, s.id, num, "round", (name || "").trim() || null, JSON.stringify(ps), parents_auto && ps.length ? 1 : 0, "student", now());
     return { content: [{ type: "text", text: "ok" }], structuredContent: { ...state(code), created_group: gid } };
@@ -428,6 +432,48 @@ function mcpFor(code) {
     const ps = parents.filter((p) => known.has(p) && p !== group_id && !members.has(p));
     logEvent(code, s.id, "group_parents", { group_id, before: JSON.parse(g.parents), before_auto: !!g.parents_auto, after: ps });
     db.prepare("UPDATE rounds SET parents=?, parents_auto=0, name=?, confirmed_at=? WHERE id=?").run(JSON.stringify(ps), name === undefined ? g.name : (name.trim() || null), now(), group_id);
+    return ok("묶음을 고쳤습니다.");
+  });
+
+  // 학생이 만든 묶음: 라운드를 가로질러 이미지를 골라 이름을 붙인다(학생의 분류 판단)
+  const nodeSet = (sid) => new Set(db.prepare("SELECT id FROM nodes WHERE session_id=?").all(sid).map((r) => r.id));
+  registerAppTool(server, "app_add_cluster", {
+    description: "학생이 고른 이미지들로 묶음 만들기",
+    inputSchema: { name: z.string().max(40), members: z.array(z.string()).min(1).max(60) },
+    _meta: appOnly,
+  }, async ({ name, members }) => {
+    const s = currentSession(code);
+    if (!s) return err("탐색이 아직 시작되지 않았습니다.");
+    const known = nodeSet(s.id), ms = [...new Set(members)].filter((m) => known.has(m));
+    if (!ms.length) return err("묶을 이미지를 골라 주세요.");
+    const cid = id(), t = now(), num = (db.prepare("SELECT max(num) m FROM rounds WHERE session_id=? AND kind='cluster'").get(s.id)?.m ?? 0) + 1;
+    db.prepare("INSERT INTO rounds(id,session_id,num,kind,name,parents,parents_auto,author,created_at) VALUES(?,?,?,?,?,?,?,?,?)").run(cid, s.id, num, "cluster", name.trim() || null, "[]", 0, "student", t);
+    for (const m of ms) db.prepare("INSERT INTO cluster_members(cluster_id,node_id,added_at) VALUES(?,?,?)").run(cid, m, t);
+    logEvent(code, s.id, "cluster_create", { cluster_id: cid, name: name.trim() || null, members: ms });
+    return { content: [{ type: "text", text: "ok" }], structuredContent: { ...state(code), created_cluster: cid } };
+  });
+
+  registerAppTool(server, "app_update_cluster", {
+    description: "묶음 이름 수정, 이미지 더하기·빼기, 묶음 풀기",
+    inputSchema: { cluster_id: z.string(), name: z.string().max(40).optional(), add: z.array(z.string()).max(60).optional(),
+      remove: z.array(z.string()).max(60).optional(), delete: z.boolean().optional() },
+    _meta: appOnly,
+  }, async ({ cluster_id, name, add = [], remove = [], delete: del }) => {
+    const s = currentSession(code);
+    const c = s && db.prepare("SELECT * FROM rounds WHERE id=? AND session_id=? AND kind='cluster'").get(cluster_id, s.id);
+    if (!c) return err("묶음을 찾지 못했어요.");
+    const t = now(), known = nodeSet(s.id);
+    if (del) {
+      db.prepare("UPDATE rounds SET confirmed_at='deleted' WHERE id=?").run(cluster_id); // 기록은 남기고 화면에서만 뺀다
+      logEvent(code, s.id, "cluster_delete", { cluster_id }); return ok("묶음을 풀었습니다.");
+    }
+    if (name !== undefined && (name.trim() || null) !== c.name) {
+      logEvent(code, s.id, "cluster_rename", { cluster_id, before: c.name, after: name.trim() || null });
+      db.prepare("UPDATE rounds SET name=? WHERE id=?").run(name.trim() || null, cluster_id);
+    }
+    for (const m of add.filter((m) => known.has(m))) db.prepare("INSERT OR IGNORE INTO cluster_members(cluster_id,node_id,added_at) VALUES(?,?,?)").run(cluster_id, m, t);
+    for (const m of remove) db.prepare("DELETE FROM cluster_members WHERE cluster_id=? AND node_id=?").run(cluster_id, m);
+    if (add.length || remove.length) logEvent(code, s.id, "cluster_members", { cluster_id, add, remove });
     return ok("묶음을 고쳤습니다.");
   });
 
@@ -755,7 +801,7 @@ app.get("/admin/identities", admin, (_q, res) => res.json(db.prepare("SELECT pro
 app.get("/admin/export", admin, (_q, res) => {
   const t = (n) => db.prepare(`SELECT * FROM ${n}`).all();
   res.json({ exported_at: now(), participants: t("participants"), sessions: t("sessions"), raw: t("raw"),
-    criteria: t("criteria"), concepts: t("concepts"), groups: t("rounds"), nodes: t("nodes"), ideas: t("ideas"), positions: t("positions"), node_judgments: t("node_judgments"), relayed_turns: t("relayed_turns"),
+    criteria: t("criteria"), concepts: t("concepts"), groups: t("rounds"), cluster_members: t("cluster_members"), nodes: t("nodes"), ideas: t("ideas"), positions: t("positions"), node_judgments: t("node_judgments"), relayed_turns: t("relayed_turns"),
     events: t("events"), judgments: t("judgments"), review_triggers: t("review_triggers") });
 });
 
